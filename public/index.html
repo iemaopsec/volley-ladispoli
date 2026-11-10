@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Volley Ladispoli · Spogliatoio &amp; Calendario</title>
+  <meta name="description" content="App spogliatoio A.S.D. Volley Ladispoli - Seconda Divisione Maschile Girone A (FIPAV 64602). Tracking paste, ritardi, calendario partite e classifica." />
+  <meta name="theme-color" content="#f5f5f7" />
+  <link rel="icon" type="image/jpeg" href="/logo-ladispoli.jpg" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- TOP NAVIGATION BAR (MINIMAL 56PX) -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-row">
+        <img src="/logo-ladispoli.jpg" alt="Logo Volley Ladispoli" class="brand-logo" onerror="this.style.display='none'" />
+        <div class="brand-titles">
+          <span class="brand-name">Volley Ladispoli</span>
+          <span class="brand-sub">2ª Div. Maschile · Girone A</span>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <button id="btnAdminToggle" class="admin-pill" type="button" aria-label="Modalità Admin">
+          <svg id="adminLockSvg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <span id="adminStatusLabel">Admin</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN SCROLL CONTAINER -->
+  <main class="app-shell">
+
+    <!-- ==========================================
+         VIEW 1: PASTE (SPOGLIATOIO)
+         ========================================== -->
+    <section id="view-paste" class="view-panel active" role="tabpanel">
+
+      <!-- COMPACT SUMMARY STRIP -->
+      <div class="summary-card">
+        <div class="summary-metrics">
+          <div class="metric-item">
+            <span class="metric-value" id="kpiTotalPending">0</span>
+            <span class="metric-label">Da portare</span>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-item">
+            <span class="metric-value metric-danger" id="kpiTotalOverdue">0</span>
+            <span class="metric-label">Arretrate</span>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-item">
+            <span class="metric-value metric-success" id="kpiTotalCompleted">0</span>
+            <span class="metric-label">Portate</span>
+          </div>
+        </div>
+        <div id="summaryStatusNote" class="summary-note">Nessuna pasta in ritardo nello spogliatoio</div>
+      </div>
+
+      <!-- GROUP 1: CHI DEVE PORTARE LE PASTE (SHOWN ONLY WHEN ACTIVE DEBTS EXIST) -->
+      <div id="activeDebtsSection" class="ios-section hidden">
+        <div class="ios-section-header">
+          <h2 class="ios-section-title">Da portare all'allenamento</h2>
+          <span id="activeDebtsCountBadge" class="section-count-pill">0</span>
+        </div>
+        <div id="activeDebtsList" class="ios-list-group"></div>
+      </div>
+
+      <!-- GROUP 2: ROSA COMPLETA (13 GIOCATORI) -->
+      <div class="ios-section">
+        <div class="ios-section-header">
+          <h2 class="ios-section-title">Squadra (13)</h2>
+          <button id="btnSortToggle" class="text-action-btn" type="button">Ordine: Priorità</button>
+        </div>
+
+        <!-- SEGMENTED CONTROL + COMPACT SEARCH -->
+        <div class="filter-bar">
+          <div class="segmented-control" id="playerFilterControl" role="tablist">
+            <button type="button" class="seg-btn active" data-filter="all">Tutti</button>
+            <button type="button" class="seg-btn" data-filter="owing">In debito</button>
+            <button type="button" class="seg-btn" data-filter="overdue">In ritardo</button>
+          </div>
+
+          <div class="search-box">
+            <svg class="search-svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input type="search" id="playerSearchInput" class="search-input" placeholder="Cerca compagno..." />
+          </div>
+        </div>
+
+        <!-- 13 PLAYERS COMPACT IOS LIST -->
+        <div id="playersList" class="ios-list-group"></div>
+      </div>
+
+      <!-- RECENT COMPLETED / ARCHIVE DISCLOSURE -->
+      <div class="ios-section">
+        <button id="btnToggleHistoryLog" class="disclosure-trigger" type="button" aria-expanded="false">
+          <span>Storico completo dello spogliatoio</span>
+          <svg class="disclosure-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div id="historyLogContainer" class="ios-list-group hidden" style="margin-top: 0.5rem;"></div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         VIEW 2: PARTITE (CALENDARIO FIPAV 64602)
+         ========================================== -->
+    <section id="view-calendario" class="view-panel" role="tabpanel">
+      <!-- NEXT MATCH FEATURE CARD -->
+      <div id="nextMatchCard" class="next-match-card"></div>
+
+      <!-- INTERACTIVE SPATIAL-TEMPORAL MONTHLY CALENDAR -->
+      <div class="ios-section">
+        <div class="ios-section-header">
+          <h2 class="ios-section-title">Calendario Interattivo Stagione</h2>
+          <span id="calMonthMatchCount" class="text-subtle-meta"></span>
+        </div>
+
+        <div class="spatial-calendar-card">
+          <!-- MONTH SCROLLER PILLS -->
+          <div id="calMonthPills" class="month-pills-bar"></div>
+
+          <!-- MONTH HEADER WITH PREV/NEXT -->
+          <div class="cal-nav-header">
+            <button type="button" id="btnCalPrevMonth" class="cal-arrow-btn" aria-label="Mese precedente">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div class="cal-month-title-wrap">
+              <h3 id="calCurrentMonthLabel" class="cal-month-title">Novembre 2026</h3>
+              <span class="cal-legend-inline">
+                <span class="legend-dot legend-home"></span>Casa
+                <span class="legend-dot legend-away"></span>Trasferta
+              </span>
+            </div>
+            <button type="button" id="btnCalNextMonth" class="cal-arrow-btn" aria-label="Mese successivo">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+          </div>
+
+          <!-- WEEKDAY HEADERS -->
+          <div class="cal-weekdays-grid">
+            <span>Lun</span><span>Mar</span><span>Mer</span><span>Gio</span><span>Ven</span><span>Sab</span><span>Dom</span>
+          </div>
+
+          <!-- 7-COL SPATIAL DAYS GRID -->
+          <div id="calDaysGrid" class="cal-days-grid"></div>
+
+          <!-- SELECTED DAY SPOTLIGHT -->
+          <div id="calSelectedMatchSpotlight" class="cal-spotlight"></div>
+        </div>
+      </div>
+
+      <!-- UPCOMING MATCHES LIST WITH LOGOS -->
+      <div class="ios-section">
+        <div class="ios-section-header">
+          <h2 class="ios-section-title">Tutte le 22 Partite</h2>
+          <button id="btnDownloadAllIcs" class="text-action-btn" type="button">Salva tutte (.ics)</button>
+        </div>
+
+        <div class="filter-bar">
+          <div class="segmented-control" id="matchFilterControl">
+            <button type="button" class="seg-btn active" data-matchfilter="upcoming">Prossime</button>
+            <button type="button" class="seg-btn" data-matchfilter="home">In Casa</button>
+            <button type="button" class="seg-btn" data-matchfilter="away">Trasferta</button>
+            <button type="button" class="seg-btn" data-matchfilter="all">Tutte (22)</button>
+          </div>
+        </div>
+
+        <div id="matchesList" class="matchup-cards-stack"></div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         VIEW 3: CLASSIFICA GIRONE A
+         ========================================== -->
+    <section id="view-classifica" class="view-panel" role="tabpanel">
+      <div class="ios-section">
+        <div class="ios-section-header">
+          <h2 class="ios-section-title">Classifica Girone A</h2>
+          <div style="display:flex; gap:0.75rem; align-items:center;">
+            <button id="btnRefreshFipav" class="text-action-btn" type="button">Aggiorna</button>
+            <a href="https://public.fipavonline.it/gironi/64602" target="_blank" rel="noopener noreferrer" class="text-action-btn">FIPAV ↗</a>
+          </div>
+        </div>
+
+        <div class="ios-list-group standings-wrap">
+          <table class="clean-table">
+            <thead>
+              <tr>
+                <th class="col-rank">#</th>
+                <th>Squadra</th>
+                <th class="col-num">PT</th>
+                <th class="col-num">G</th>
+                <th class="col-num">V</th>
+                <th class="col-num">P</th>
+                <th class="col-num hide-xs">SV/SP</th>
+              </tr>
+            </thead>
+            <tbody id="standingsBody"></tbody>
+          </table>
+        </div>
+        <p id="fipavSyncMeta" class="footnote-text"></p>
+      </div>
+
+      <!-- OTHER MATCHES BY GIORNATA -->
+      <div class="ios-section">
+        <div class="ios-section-header">
+          <h2 class="ios-section-title">Risultati del Girone</h2>
+          <select id="giornataSelect" class="inline-select" aria-label="Seleziona giornata"></select>
+        </div>
+        <div id="gironeMatchesList" class="ios-list-group"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==========================================
+       BOTTOM TAB BAR (THUMB-FRIENDLY IOS STYLE)
+       ========================================== -->
+  <nav class="bottom-bar" aria-label="Navigazione principale">
+    <div class="bottom-bar-inner">
+      <button type="button" class="nav-tab active" data-view="paste">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+        <span>Paste</span>
+        <span id="tabBadgePending" class="nav-badge hidden">0</span>
+      </button>
+
+      <button type="button" class="nav-tab" data-view="calendario">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/>
+        </svg>
+        <span>Partite</span>
+      </button>
+
+      <button type="button" class="nav-tab" data-view="classifica">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
+        </svg>
+        <span>Classifica</span>
+      </button>
+
+      <button type="button" id="btnFabAddPaste" class="nav-add-btn" aria-label="Segna nuove paste">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/>
+        </svg>
+        <span>Segna</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ==========================================
+       SHEET 1: PLAYER DETAIL BOTTOM SHEET
+       ========================================== -->
+  <div id="sheetPlayer" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheetPlayerName">
+    <div class="bottom-sheet" data-sheet="sheetPlayer">
+      <div class="sheet-grabber-area"><div class="sheet-grabber"></div></div>
+      <div class="sheet-header">
+        <div class="sheet-player-id">
+          <div id="sheetPlayerAvatar" class="avatar-circle avatar-lg">AP</div>
+          <div>
+            <h3 id="sheetPlayerName" class="sheet-title">Giocatore</h3>
+            <p id="sheetPlayerSubtitle" class="sheet-subtitle">Situazione paste</p>
+          </div>
+        </div>
+        <button type="button" class="sheet-close-btn" data-close="sheetPlayer" aria-label="Chiudi">✕</button>
+      </div>
+
+      <div class="sheet-body">
+        <div id="sheetPlayerCounters" class="sheet-kpi-row"></div>
+
+        <button type="button" id="btnAddPasteFromSheet" class="btn-primary-full">
+          + Segna paste per questo giocatore
+        </button>
+
+        <div id="sheetPlayerEntries" class="sheet-entries-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==========================================
+       SHEET 2: ADD / EDIT PASTE BOTTOM SHEET
+       ========================================== -->
+  <div id="sheetPasteForm" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheetFormTitle">
+    <div class="bottom-sheet" data-sheet="sheetPasteForm">
+      <div class="sheet-grabber-area"><div class="sheet-grabber"></div></div>
+      <div class="sheet-header">
+        <div>
+          <h3 id="sheetFormTitle" class="sheet-title">Segna Paste</h3>
+          <p class="sheet-subtitle">Seleziona chi deve portarle, il motivo e quando è successo</p>
+        </div>
+        <button type="button" class="sheet-close-btn" data-close="sheetPasteForm" aria-label="Chiudi">✕</button>
+      </div>
+
+      <form id="formPaste" class="sheet-body">
+        <input type="hidden" id="pasteEntryId" value="" />
+        <input type="hidden" id="pastePlayerSelect" value="" />
+
+        <!-- 1. PREMIUM PLAYER SELECTOR -->
+        <div class="field-block">
+          <label class="field-label">Chi deve portare le paste</label>
+          <div id="premiumPlayerGrid" class="player-picker-grid" role="radiogroup" aria-label="Seleziona giocatore"></div>
+        </div>
+
+        <!-- 2. DEFAULT REASONS + ALTRO -->
+        <div class="field-block">
+          <label class="field-label">Motivo</label>
+          <div id="reasonChipsWrap" class="reasons-grid"></div>
+          <div id="customReasonWrap" class="custom-reason-reveal hidden">
+            <input type="text" id="pasteReasonTitleInput" class="field-input" placeholder="Scrivi il motivo..." />
+          </div>
+        </div>
+
+        <!-- 3. QUANDO È SUCCESSO -->
+        <div class="field-block">
+          <label for="pasteIncidentDateInput" class="field-label">Quando è successo</label>
+          <div class="incident-date-bar">
+            <div class="incident-quick-tabs" id="incidentQuickTabs">
+              <button type="button" class="inc-tab active" data-offset="0">Oggi</button>
+              <button type="button" class="inc-tab" data-offset="-1">Ieri</button>
+              <button type="button" class="inc-tab" data-offset="custom">Altra data</button>
+            </div>
+            <input type="date" id="pasteIncidentDateInput" class="field-input incident-date-input hidden" required />
+          </div>
+        </div>
+
+        <!-- ADMIN PIN IF NOT UNLOCKED -->
+        <div id="formAdminBox" class="admin-Inline-box">
+          <label for="formAdminCodeInput" class="field-label">Codice Admin</label>
+          <input type="password" id="formAdminCodeInput" class="field-input" inputmode="numeric" placeholder="Inserisci codice Admin" autocomplete="off" />
+        </div>
+
+        <div class="sheet-footer-actions" style="margin-top: 1.15rem;">
+          <button type="button" class="btn-secondary-half" data-close="sheetPasteForm">Annulla</button>
+          <button type="submit" class="btn-primary-half">Conferma</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==========================================
+       SHEET 3: MATCH DETAIL BOTTOM SHEET
+       ========================================== -->
+  <div id="sheetMatch" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheetMatchTitle">
+    <div class="bottom-sheet" data-sheet="sheetMatch">
+      <div class="sheet-grabber-area"><div class="sheet-grabber"></div></div>
+      <div class="sheet-header">
+        <div>
+          <span id="sheetMatchGiornata" class="sheet-eyebrow">GIORNATA</span>
+          <h3 id="sheetMatchTitle" class="sheet-title">Dettaglio Partita</h3>
+        </div>
+        <button type="button" class="sheet-close-btn" data-close="sheetMatch" aria-label="Chiudi">✕</button>
+      </div>
+      <div id="sheetMatchBody" class="sheet-body"></div>
+    </div>
+  </div>
+
+  <!-- ==========================================
+       SHEET 4: ADMIN & CUSTOM REASONS SHEET
+       ========================================== -->
+  <div id="sheetAdmin" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheetAdminTitle">
+    <div class="bottom-sheet" data-sheet="sheetAdmin">
+      <div class="sheet-grabber-area"><div class="sheet-grabber"></div></div>
+      <div class="sheet-header">
+        <div>
+          <h3 id="sheetAdminTitle" class="sheet-title">Gestione Admin</h3>
+          <p id="sheetAdminSubtitle" class="sheet-subtitle">Inserisci il codice per modificare le paste</p>
+        </div>
+        <button type="button" class="sheet-close-btn" data-close="sheetAdmin" aria-label="Chiudi">✕</button>
+      </div>
+
+      <div class="sheet-body">
+        <!-- UNLOCK FORM -->
+        <form id="formAdminUnlock">
+          <div class="field-block">
+            <label for="adminCodeModalInput" class="field-label">Codice Admin</label>
+            <input type="password" id="adminCodeModalInput" class="field-input" inputmode="numeric" placeholder="Inserisci codice Admin" required autocomplete="off" />
+          </div>
+          <button type="submit" class="btn-primary-full">Conferma Codice Admin</button>
+        </form>
+
+        <!-- ADMIN SETTINGS WHEN UNLOCKED -->
+        <div id="adminUnlockedPanel" class="hidden">
+          <form id="formAdminChangeCode" class="field-block">
+            <label for="newAdminCodeInput" class="field-label">Cambia Codice Admin</label>
+            <div class="inline-add-row">
+              <input type="text" id="newAdminCodeInput" class="field-input" placeholder="Nuovo codice..." required minlength="3" autocomplete="off" />
+              <button type="submit" class="btn-small-secondary">Aggiorna</button>
+            </div>
+          </form>
+
+          <button type="button" id="btnLockAdmin" class="btn-danger-outline" style="margin-top: 0.75rem;">
+            Blocca sessione Admin su questo telefono
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toastContainer" class="toast-stack" aria-live="polite"></div>
+
+  <script src="/fipav-fallback.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
