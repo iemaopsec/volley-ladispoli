@@ -13,11 +13,11 @@ const FIPAV_TAB_FILE = path.join(DATA_DIR, 'fipav_tables_64602.json');
 const DEFAULT_DB = {
   adminCode: '098765',
   players: [
-    { id: 'alessandro-paris', name: 'Paris', shortName: 'Paris', avatarColor: '#e11d48' },
+    { id: 'alessandro-paris', name: 'Paris', shortName: 'Paris', avatarColor: '#e11d48', avatarUrl: '/pp/PARIS.jpeg' },
     { id: 'apox', name: 'Apox', shortName: 'Apox', avatarColor: '#2563eb' },
-    { id: 'emanuele', name: 'Emanuele', shortName: 'Emanuele', avatarColor: '#0284c7' },
-    { id: 'francesco', name: 'Francesco', shortName: 'Francesco', avatarColor: '#dc2626' },
-    { id: 'luca', name: 'Luca', shortName: 'Luca', avatarColor: '#4f46e5' },
+    { id: 'emanuele', name: 'Emanuele', shortName: 'Emanuele', avatarColor: '#0284c7', avatarUrl: '/pp/IEMA.jpeg' },
+    { id: 'francesco', name: 'Francesco', shortName: 'Francesco', avatarColor: '#dc2626', avatarUrl: '/pp/FRANCESCO.jpeg' },
+    { id: 'luca', name: 'Luca', shortName: 'Luca', avatarColor: '#4f46e5', avatarUrl: '/pp/LUCA.jpeg' },
     { id: 'simone', name: 'Simone', shortName: 'Simone', avatarColor: '#0891b2' },
     { id: 'michael', name: 'Michael', shortName: 'Michael', avatarColor: '#be123c' },
     { id: 'matteo', name: 'Matteo', shortName: 'Matteo', avatarColor: '#1d4ed8' },
@@ -40,6 +40,48 @@ const DEFAULT_DB = {
   pasteEntries: []
 };
 
+const PHOTO_NAME_ALIASES = {
+  paris: 'alessandro-paris',
+  alessandro: 'alessandro-paris',
+  iema: 'emanuele',
+  emanuele: 'emanuele',
+  francesco: 'francesco',
+  luca: 'luca',
+  apox: 'apox',
+  simone: 'simone',
+  michael: 'michael',
+  matteo: 'matteo',
+  sandru: 'sandru',
+  andrea: 'andrea',
+  michele: 'michele-aiello',
+  fusco: 'fusco',
+  tizi: 'tizi',
+  frezza: 'frezza'
+};
+
+function attachProfilePhotos(players) {
+  const dirs = [path.join(__dirname, 'pp'), path.join(PUBLIC_DIR, 'pp')];
+  const foundByPlayerId = {};
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        const ext = path.extname(file).toLowerCase();
+        if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) continue;
+        const base = path.basename(file, path.extname(file)).trim().toLowerCase();
+        const mappedId = PHOTO_NAME_ALIASES[base] || base;
+        foundByPlayerId[mappedId] = `/pp/${file}`;
+      }
+    } catch (_) {}
+  }
+  for (const p of players) {
+    if (foundByPlayerId[p.id]) {
+      p.avatarUrl = foundByPlayerId[p.id];
+    }
+  }
+}
+
 function ensureDb() {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -54,11 +96,14 @@ function ensureDb() {
     if (!parsed.customReasons || !Array.isArray(parsed.customReasons)) parsed.customReasons = DEFAULT_DB.customReasons;
     if (!parsed.pasteEntries || !Array.isArray(parsed.pasteEntries)) parsed.pasteEntries = [];
     if (!parsed.adminCode) parsed.adminCode = DEFAULT_DB.adminCode;
+    attachProfilePhotos(parsed.players);
     return parsed;
   } catch (err) {
     console.error('Error reading db.json, resetting to default:', err);
     fs.writeFileSync(DB_FILE, JSON.stringify(DEFAULT_DB, null, 2), 'utf8');
-    return JSON.parse(JSON.stringify(DEFAULT_DB));
+    const fallback = JSON.parse(JSON.stringify(DEFAULT_DB));
+    attachProfilePhotos(fallback.players);
+    return fallback;
   }
 }
 
@@ -407,9 +452,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     // STATIC FILES
-    let filePath = pathname === '/' ? '/index.html' : pathname;
+    let filePath = pathname === '/' ? '/index.html' : decodeURIComponent(pathname);
     const safePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, '');
-    const absPath = path.join(PUBLIC_DIR, safePath);
+    let absPath = path.join(PUBLIC_DIR, safePath);
+    if (!fs.existsSync(absPath) && safePath.startsWith(path.sep + 'pp' + path.sep) || safePath.startsWith('/pp/')) {
+      const rootPpCandidate = path.join(__dirname, safePath);
+      if (fs.existsSync(rootPpCandidate)) {
+        absPath = rootPpCandidate;
+      }
+    }
 
     if (fs.existsSync(absPath) && fs.statSync(absPath).isFile()) {
       const ext = path.extname(absPath).toLowerCase();

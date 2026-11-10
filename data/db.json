@@ -5,7 +5,8 @@
       "id": "alessandro-paris",
       "name": "Paris",
       "shortName": "Paris",
-      "avatarColor": "#e11d48"
+      "avatarColor": "#e11d48",
+      "avatarUrl": "/pp/PARIS.jpeg"
     },
     {
       "id": "apox",
@@ -17,19 +18,22 @@
       "id": "emanuele",
       "name": "Emanuele",
       "shortName": "Emanuele",
-      "avatarColor": "#0284c7"
+      "avatarColor": "#0284c7",
+      "avatarUrl": "/pp/IEMA.jpeg"
     },
     {
       "id": "francesco",
       "name": "Francesco",
       "shortName": "Francesco",
-      "avatarColor": "#dc2626"
+      "avatarColor": "#dc2626",
+      "avatarUrl": "/pp/FRANCESCO.jpeg"
     },
     {
       "id": "luca",
       "name": "Luca",
       "shortName": "Luca",
-      "avatarColor": "#4f46e5"
+      "avatarColor": "#4f46e5",
+      "avatarUrl": "/pp/LUCA.jpeg"
     },
     {
       "id": "simone",

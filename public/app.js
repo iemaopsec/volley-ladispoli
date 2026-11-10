@@ -8,11 +8,11 @@
   };
 
   const DEFAULT_PLAYERS = [
-    { id: 'alessandro-paris', name: 'Paris', shortName: 'Paris', avatarColor: '#e11d48' },
+    { id: 'alessandro-paris', name: 'Paris', shortName: 'Paris', avatarColor: '#e11d48', avatarUrl: '/pp/PARIS.jpeg' },
     { id: 'apox', name: 'Apox', shortName: 'Apox', avatarColor: '#2563eb' },
-    { id: 'emanuele', name: 'Emanuele', shortName: 'Emanuele', avatarColor: '#0284c7' },
-    { id: 'francesco', name: 'Francesco', shortName: 'Francesco', avatarColor: '#dc2626' },
-    { id: 'luca', name: 'Luca', shortName: 'Luca', avatarColor: '#4f46e5' },
+    { id: 'emanuele', name: 'Emanuele', shortName: 'Emanuele', avatarColor: '#0284c7', avatarUrl: '/pp/IEMA.jpeg' },
+    { id: 'francesco', name: 'Francesco', shortName: 'Francesco', avatarColor: '#dc2626', avatarUrl: '/pp/FRANCESCO.jpeg' },
+    { id: 'luca', name: 'Luca', shortName: 'Luca', avatarColor: '#4f46e5', avatarUrl: '/pp/LUCA.jpeg' },
     { id: 'simone', name: 'Simone', shortName: 'Simone', avatarColor: '#0891b2' },
     { id: 'michael', name: 'Michael', shortName: 'Michael', avatarColor: '#be123c' },
     { id: 'matteo', name: 'Matteo', shortName: 'Matteo', avatarColor: '#1d4ed8' },
@@ -139,6 +139,16 @@
       return (words[0][0] + words[words.length - 1][0]).toUpperCase();
     }
     return (name || 'VL').slice(0, 2).toUpperCase();
+  }
+
+  function renderAvatarHtml(player, cls = 'avatar-circle', extraStyle = '') {
+    const initials = getInitials(player?.name);
+    const bg = player?.avatarColor || '#515158';
+    const styleStr = `background:${bg};${extraStyle}`;
+    if (player && player.avatarUrl) {
+      return `<div class="${cls} has-photo" style="${styleStr}"><img src="${escapeHtml(player.avatarUrl)}" alt="${escapeHtml(player.name)}" class="avatar-img" loading="lazy" /></div>`;
+    }
+    return `<div class="${cls}" style="${styleStr}">${initials}</div>`;
   }
 
   function escapeHtml(str) {
@@ -385,7 +395,7 @@
         return `
           <div class="list-row" data-action="open-player" data-player-id="${player.id}">
             <div class="row-left">
-              <div class="avatar-circle" style="background:${player.avatarColor}">${getInitials(player.name)}</div>
+              ${renderAvatarHtml(player, 'avatar-circle')}
               <div class="row-text">
                 <div class="row-title">${escapeHtml(player.name)}</div>
                 <div class="row-sub sub-owing">
@@ -493,7 +503,7 @@
       return `
         <button type="button" class="list-row" data-action="open-player" data-player-id="${player.id}">
           <div class="row-left">
-            <div class="avatar-circle" style="background:${player.avatarColor}">${getInitials(player.name)}</div>
+            ${renderAvatarHtml(player, 'avatar-circle')}
             <div class="row-text">
               <div class="row-title">${escapeHtml(player.name)}</div>
               ${subHtml}
@@ -524,14 +534,13 @@
     container.innerHTML = state.pasteEntries.map(entry => {
       const p = playerMap.get(entry.playerId) || { name: entry.playerId, avatarColor: '#515158' };
       const delay = formatDelayLabel(entry);
-      const dueStr = entry.dueDate ? formatShortDate(entry.dueDate) : 'Indefinita';
       return `
         <div class="list-row" data-action="open-player" data-player-id="${p.id}">
           <div class="row-left">
-            <div class="avatar-circle" style="background:${p.avatarColor}; width:32px; height:32px; font-size:0.74rem;">${getInitials(p.name)}</div>
+            ${renderAvatarHtml(p, 'avatar-circle', 'width:32px; height:32px; font-size:0.74rem;')}
             <div class="row-text">
               <div class="row-title">${escapeHtml(p.name)} · ${escapeHtml(entry.reasonTitle)}</div>
-              <div class="row-sub">Accaduto ${formatShortDate(entry.incidentDate)} · Consegna: ${dueStr}</div>
+              <div class="row-sub">Quando è successo: ${formatShortDate(entry.incidentDate)}</div>
             </div>
           </div>
           <div class="row-right">
@@ -635,8 +644,12 @@
 
     const stats = computePlayerStats(playerId);
     const avatar = document.getElementById('sheetPlayerAvatar');
-    avatar.textContent = getInitials(player.name);
     avatar.style.background = player.avatarColor;
+    if (player.avatarUrl) {
+      avatar.innerHTML = `<img src="${escapeHtml(player.avatarUrl)}" alt="${escapeHtml(player.name)}" class="avatar-img" />`;
+    } else {
+      avatar.textContent = getInitials(player.name);
+    }
 
     document.getElementById('sheetPlayerName').textContent = player.name;
     const sheetSub = document.getElementById('sheetPlayerSubtitle');
@@ -776,9 +789,12 @@
 
     grid.innerHTML = state.players.map(p => {
       const isSelected = p.id === selectedPlayerId;
+      const avatarContent = p.avatarUrl
+        ? `<img src="${escapeHtml(p.avatarUrl)}" alt="${escapeHtml(p.name)}" class="avatar-img" loading="lazy" />`
+        : getInitials(p.name);
       return `
         <button type="button" class="player-pick-card ${isSelected ? 'is-selected' : ''}" data-pick-player="${p.id}">
-          <span class="player-pick-avatar" style="background:${p.avatarColor}">${getInitials(p.name)}</span>
+          <span class="player-pick-avatar" style="background:${p.avatarColor}">${avatarContent}</span>
           <span class="player-pick-name">${escapeHtml(p.name)}</span>
         </button>
       `;
