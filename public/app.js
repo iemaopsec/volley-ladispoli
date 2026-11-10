@@ -8,7 +8,7 @@
   };
 
   const DEFAULT_PLAYERS = [
-    { id: 'alessandro-paris', name: 'Alessandro Paris', shortName: 'A. Paris', avatarColor: '#e11d48' },
+    { id: 'alessandro-paris', name: 'Paris', shortName: 'Paris', avatarColor: '#e11d48' },
     { id: 'apox', name: 'Apox', shortName: 'Apox', avatarColor: '#2563eb' },
     { id: 'emanuele', name: 'Emanuele', shortName: 'Emanuele', avatarColor: '#0284c7' },
     { id: 'francesco', name: 'Francesco', shortName: 'Francesco', avatarColor: '#dc2626' },
