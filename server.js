@@ -23,9 +23,10 @@ const DEFAULT_DB = {
     { id: 'matteo', name: 'Matteo', shortName: 'Matteo', avatarColor: '#1d4ed8' },
     { id: 'sandru', name: 'Sandru', shortName: 'Sandru', avatarColor: '#ea580c' },
     { id: 'andrea', name: 'Andrea', shortName: 'Andrea', avatarColor: '#0d9488' },
-    { id: 'michele-aiello', name: 'Michele Aiello', shortName: 'M. Aiello', avatarColor: '#7c3aed' },
+    { id: 'michele-aiello', name: 'Michele', shortName: 'Michele', avatarColor: '#7c3aed' },
     { id: 'fusco', name: 'Fusco', shortName: 'Fusco', avatarColor: '#b91c1c' },
-    { id: 'tizi', name: 'Tizi', shortName: 'Tizi', avatarColor: '#0369a1' }
+    { id: 'tizi', name: 'Tizi', shortName: 'Tizi', avatarColor: '#0369a1' },
+    { id: 'frezza', name: 'Frezza', shortName: 'Frezza', avatarColor: '#16a34a' }
   ],
   customReasons: [
     { id: 'spogliatoio', icon: '🎒', label: 'Dimenticanza nello spogliatoio', isBuiltIn: true },
