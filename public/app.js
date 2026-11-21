@@ -76,6 +76,15 @@
     players: [...DEFAULT_PLAYERS],
     customReasons: [...DEFAULT_REASONS],
     pasteEntries: [],
+    videos: [],
+    socks: [],
+    currentUser: null,
+    appConfig: {
+      googleClientId: '',
+      cloudinaryCloudName: '',
+      cloudinaryEnabled: false,
+      persistence: 'local-disk'
+    },
     adminCode: '',
     isAdmin: false,
     playerFilter: 'all',
@@ -83,12 +92,21 @@
     playerSearch: '',
     activePlayerSheetId: null,
     pendingAdminCallback: null,
+    pendingLoginCallback: null,
+    // Media & Socks
+    mediaTab: 'funny', // 'funny' | 'match' | 'socks'
+    sockSort: 'top',   // 'top' | 'recent'
+    videoUploadSource: 'link', // 'link' | 'file'
+    sockCompressedDataUrl: '',
+    sockRawFile: null,
+    deferredInstallPrompt: null,
     // FIPAV & Spatial Calendar
     fipavCalendar: null,
     fipavTables: null,
     fipavUpdatedAt: '',
     matchFilter: 'upcoming',
     selectedGiornata: 'Giornata 1',
+    hasAutoSelectedRound: false,
     calMonthKey: '2026-11',
     calSelectedMatchId: null
   };
@@ -182,7 +200,9 @@
       localStorage.setItem(STORAGE_KEYS.LOCAL_DB, JSON.stringify({
         players: state.players,
         customReasons: state.customReasons,
-        pasteEntries: state.pasteEntries
+        pasteEntries: state.pasteEntries,
+        videos: state.videos,
+        socks: state.socks
       }));
     } catch (_) {}
   }
@@ -201,12 +221,22 @@
     if (state.adminCode) {
       headers['X-Admin-Code'] = state.adminCode;
     }
-    const res = await fetch(url, Object.assign({}, options, { headers }));
+    const res = await fetch(url, Object.assign({ credentials: 'same-origin' }, options, { headers }));
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error || `Errore ${res.status}`);
     }
     return data;
+  }
+
+  async function loadAppConfig() {
+    try {
+      const cfg = await apiFetch('/api/config');
+      state.appConfig = Object.assign({}, state.appConfig, cfg);
+      if (state.appConfig.googleClientId) {
+        initGoogleSignIn();
+      }
+    } catch (_) {}
   }
 
   async function loadAppState() {
@@ -215,6 +245,9 @@
       state.players = data.players || DEFAULT_PLAYERS;
       state.customReasons = data.customReasons || DEFAULT_REASONS;
       state.pasteEntries = data.pasteEntries || [];
+      state.videos = data.videos || [];
+      state.socks = data.socks || [];
+      state.currentUser = data.currentUser || null;
       saveLocalBackup();
     } catch (_) {
       const backup = loadLocalBackup();
@@ -222,6 +255,8 @@
         state.players = backup.players || DEFAULT_PLAYERS;
         state.customReasons = backup.customReasons || DEFAULT_REASONS;
         state.pasteEntries = backup.pasteEntries || [];
+        state.videos = backup.videos || [];
+        state.socks = backup.socks || [];
       }
     }
 
@@ -238,7 +273,15 @@
     }
 
     updateAdminChrome();
+    updateAccountChrome();
     renderPasteView();
+    renderMediaView();
+  }
+
+  function registerServiceWorker() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
   }
 
   async function loadFipavData(forceRefresh = false) {
@@ -954,11 +997,45 @@
     }, 200);
   }
 
+  function isMatchPlayed(m) {
+    if (!m) return false;
+    if (m.played === true || m.played === 1 || m.played === '1') return true;
+    const s1 = Number(m['team1-setwin'] || 0);
+    const s2 = Number(m['team2-setwin'] || 0);
+    return (s1 + s2) > 0;
+  }
+
+  function getMatchResultInfo(m) {
+    const played = isMatchPlayed(m);
+    const s1 = Number(m['team1-setwin'] || 0);
+    const s2 = Number(m['team2-setwin'] || 0);
+    const ptA = Array.isArray(m.pt_a) ? m.pt_a : [];
+    const ptB = Array.isArray(m.pt_b) ? m.pt_b : [];
+    const sets = [];
+    const len = Math.max(ptA.length, ptB.length);
+    for (let i = 0; i < len; i++) {
+      if (ptA[i] !== undefined || ptB[i] !== undefined) {
+        sets.push(`${ptA[i] ?? 0}-${ptB[i] ?? 0}`);
+      }
+    }
+    const isUsInvolved = String(m.team1?.id) === LADISPOLI_TEAM_ID || String(m.team2?.id) === LADISPOLI_TEAM_ID;
+    const isUsHome = String(m.team1?.id) === LADISPOLI_TEAM_ID;
+    const didWeWin = played && isUsInvolved ? (isUsHome ? s1 > s2 : s2 > s1) : null;
+    return {
+      played,
+      s1,
+      s2,
+      scoreText: `${s1}-${s2}`,
+      sets,
+      didWeWin
+    };
+  }
+
   function renderCalendarAndStandings() {
     const matches = getLadispoliMatches();
     if (!state.calSelectedMatchId && matches.length > 0) {
       const now = new Date();
-      const nextMatch = matches.find(m => !m.played && m.dateObj && m.dateObj >= new Date(now.getTime() - 3 * 3600 * 1000)) || matches[0];
+      const nextMatch = matches.find(m => !isMatchPlayed(m) && m.dateObj && m.dateObj >= new Date(now.getTime() - 3 * 3600 * 1000)) || matches[matches.length - 1];
       state.calSelectedMatchId = nextMatch.id;
       if (nextMatch.dateObj) {
         const y = nextMatch.dateObj.getFullYear();
@@ -970,11 +1047,62 @@
       }
     }
 
+    renderLastMatchCard();
     renderNextMatchCard();
     renderSpatialCalendar();
     renderCompactMatchesList();
     renderStandings();
     renderGironeMatchesByRound();
+  }
+
+  function renderLastMatchCard() {
+    const card = document.getElementById('lastMatchCard');
+    if (!card) return;
+
+    const playedMatches = getLadispoliMatches().filter(m => isMatchPlayed(m));
+    if (playedMatches.length === 0) {
+      card.classList.add('hidden');
+      card.innerHTML = '';
+      return;
+    }
+
+    const lastMatch = playedMatches[playedMatches.length - 1];
+    const res = getMatchResultInfo(lastMatch);
+    const outcomeLabel = res.didWeWin ? 'Vittoria Volley Ladispoli' : 'Sconfitta';
+    const outcomeCls = res.didWeWin ? 'is-win' : 'is-loss';
+
+    card.classList.remove('hidden', 'is-loss');
+    if (!res.didWeWin) card.classList.add('is-loss');
+
+    card.innerHTML = `
+      <div class="lm-top">
+        <span>Ultimo Risultato · ${escapeHtml(lastMatch.day)} · ${escapeHtml(lastMatch.date)}</span>
+        <span class="lm-result-badge ${outcomeCls}">${outcomeLabel}</span>
+      </div>
+
+      <div class="mc-versus-row" style="border-top:none; padding-top:0;">
+        <div class="mc-team">
+          <img src="${escapeHtml(getTeamLogo(lastMatch.team1))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
+          <span class="mc-team-title ${lastMatch.team1.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(lastMatch.team1.title)}</span>
+        </div>
+
+        <span class="mc-score-pill ${outcomeCls}">${res.scoreText}</span>
+
+        <div class="mc-team mc-team-right">
+          <span class="mc-team-title ${lastMatch.team2.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(lastMatch.team2.title)}</span>
+          <img src="${escapeHtml(getTeamLogo(lastMatch.team2))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
+        </div>
+      </div>
+
+      ${res.sets.length > 0 ? `
+        <div class="set-partials-row">
+          <span style="font-size:0.7rem; font-weight:700; color:var(--text-tertiary);">Set:</span>
+          ${res.sets.map(s => `<span class="set-chip">${escapeHtml(s)}</span>`).join('')}
+        </div>
+      ` : ''}
+    `;
+
+    card.onclick = () => openMatchDetailSheet(lastMatch.id);
   }
 
   function renderNextMatchCard() {
@@ -985,17 +1113,18 @@
     if (matches.length === 0) return;
 
     const now = new Date();
-    const nextMatch = matches.find(m => !m.played && m.dateObj && m.dateObj >= new Date(now.getTime() - 3 * 3600 * 1000)) || matches[0];
+    const nextMatch = matches.find(m => !isMatchPlayed(m) && m.dateObj && m.dateObj >= new Date(now.getTime() - 3 * 3600 * 1000)) || matches[matches.length - 1];
+    const res = getMatchResultInfo(nextMatch);
     const diffMs = (nextMatch.dateObj || now) - now;
-    let countdown = 'Prossima gara';
-    if (diffMs > 0) {
+    let countdown = res.played ? `Risultato ${res.scoreText}` : 'Prossima gara';
+    if (!res.played && diffMs > 0) {
       const days = Math.floor(diffMs / 86400000);
       countdown = days > 0 ? `Tra ${days} ${days === 1 ? 'giorno' : 'giorni'}` : 'Oggi';
     }
 
     card.innerHTML = `
       <div class="nm-top">
-        <span class="nm-tag">Prossima Partita · ${escapeHtml(nextMatch.day)}</span>
+        <span class="nm-tag">${res.played ? 'Ultima Partita' : 'Prossima Partita'} · ${escapeHtml(nextMatch.day)}</span>
         <span class="nm-countdown">${countdown}</span>
       </div>
 
@@ -1006,7 +1135,7 @@
         </div>
 
         <div class="nm-center">
-          <div class="nm-time">${escapeHtml((nextMatch.time || '').replace('.', ':'))}</div>
+          <div class="nm-time">${res.played ? escapeHtml(res.scoreText) : escapeHtml((nextMatch.time || '').replace('.', ':'))}</div>
           <div class="nm-date">${escapeHtml(nextMatch.date)}</div>
           <span class="ha-tag ${nextMatch.isHome ? 'ha-home' : 'ha-away'}" style="margin:0.25rem 0 0; display:inline-block;">
             ${nextMatch.isHome ? 'In Casa' : 'Trasferta'}
@@ -1026,7 +1155,7 @@
 
       <div class="nm-actions">
         <button type="button" class="btn-primary-half" data-action="open-match" data-match-id="${nextMatch.id}">
-          Aggiungi al Calendario
+          ${res.played ? 'Vedi Parziali Set' : 'Aggiungi al Calendario'}
         </button>
         <a href="${buildGoogleMapsUrl(nextMatch)}" target="_blank" rel="noopener noreferrer" class="btn-secondary-half">
           Apri Palestra in Maps
@@ -1101,12 +1230,17 @@
         const haClass = match.isHome ? 'match-home' : 'match-away';
         const oppLogo = getTeamLogo(match.opponent);
         const shortTime = (match.time || '18.00').replace('.', ':');
+        const res = getMatchResultInfo(match);
+        const playedClass = res.played ? (res.didWeWin ? 'is-played-win' : 'is-played-loss') : '';
+        const cellBottom = res.played
+          ? `<span class="cal-cell-score ${res.didWeWin ? 'is-win' : 'is-loss'}">${res.scoreText}</span>`
+          : `<span class="cal-cell-time">${escapeHtml(shortTime)}</span>`;
 
         cellsHtml.push(`
-          <button type="button" class="cal-day-cell has-match ${haClass} ${isSelected ? 'is-selected' : ''}" data-action="select-cal-match" data-match-id="${match.id}" title="${escapeHtml(match.day)}: ${escapeHtml(match.opponent.title)}">
+          <button type="button" class="cal-day-cell has-match ${haClass} ${playedClass} ${isSelected ? 'is-selected' : ''}" data-action="select-cal-match" data-match-id="${match.id}" title="${escapeHtml(match.day)}: ${escapeHtml(match.opponent.title)}">
             <span class="cal-day-num">${day}</span>
             <img src="${escapeHtml(oppLogo)}" alt="" class="cal-cell-logo" onerror="this.src='/logo-ladispoli.jpg'" />
-            <span class="cal-cell-time">${escapeHtml(shortTime)}</span>
+            ${cellBottom}
           </button>
         `);
       } else {
@@ -1130,6 +1264,7 @@
     }
 
     if (spotlightMatch && spotlightEl) {
+      const res = getMatchResultInfo(spotlightMatch);
       const matchIdx = matches.findIndex(m => m.id === spotlightMatch.id);
       const prevMatch = matchIdx > 0 ? matches[matchIdx - 1] : null;
       let spacingNote = 'Prima giornata di campionato';
@@ -1141,6 +1276,10 @@
       const fullDateStr = spotlightMatch.dateObj
         ? spotlightMatch.dateObj.toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
         : spotlightMatch.date;
+
+      const centerBadge = res.played
+        ? `<span class="mc-score-pill ${res.didWeWin ? 'is-win' : 'is-loss'}">${res.scoreText}</span>`
+        : `<span class="sp-vs">VS</span>`;
 
       spotlightEl.innerHTML = `
         <div class="spotlight-box">
@@ -1156,17 +1295,24 @@
               <img src="${escapeHtml(getTeamLogo(spotlightMatch.team1))}" alt="" class="sp-logo" onerror="this.src='/logo-ladispoli.jpg'" />
               <span class="sp-name ${spotlightMatch.team1.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(spotlightMatch.team1.title)}</span>
             </div>
-            <span class="sp-vs">VS</span>
+            ${centerBadge}
             <div class="sp-team sp-right">
               <span class="sp-name ${spotlightMatch.team2.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(spotlightMatch.team2.title)}</span>
               <img src="${escapeHtml(getTeamLogo(spotlightMatch.team2))}" alt="" class="sp-logo" onerror="this.src='/logo-ladispoli.jpg'" />
             </div>
           </div>
 
+          ${res.played && res.sets.length > 0 ? `
+            <div class="set-partials-row">
+              <span style="font-size:0.7rem; font-weight:700; color:var(--text-tertiary);">Parziali:</span>
+              ${res.sets.map(s => `<span class="set-chip">${escapeHtml(s)}</span>`).join('')}
+            </div>
+          ` : ''}
+
           <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; font-size:0.74rem; color:var(--text-tertiary);">
             <span>⏱️ Ritmo: ${escapeHtml(spacingNote)}</span>
             <button type="button" class="text-action-btn" data-action="open-match" data-match-id="${spotlightMatch.id}">
-              Apri dettagli &amp; Calendario ›
+              ${res.played ? 'Vedi dettaglio gara ›' : 'Apri dettagli &amp; Calendario ›'}
             </button>
           </div>
         </div>
@@ -1178,21 +1324,45 @@
     const listEl = document.getElementById('matchesList');
     if (!listEl) return;
 
-    const matches = getLadispoliMatches().filter(m => {
-      if (state.matchFilter === 'upcoming') return !m.played;
+    const allMatches = getLadispoliMatches();
+    const playedCount = allMatches.filter(m => isMatchPlayed(m)).length;
+    const playedTab = document.querySelector('#matchFilterControl [data-matchfilter="played"]');
+    if (playedTab) {
+      playedTab.textContent = playedCount > 0 ? `Risultati (${playedCount})` : 'Risultati';
+    }
+
+    const matches = allMatches.filter(m => {
+      const played = isMatchPlayed(m);
+      if (state.matchFilter === 'upcoming') return !played;
+      if (state.matchFilter === 'played') return played;
       if (state.matchFilter === 'home') return m.isHome;
       if (state.matchFilter === 'away') return !m.isHome;
       return true;
     });
 
+    if (matches.length === 0) {
+      listEl.innerHTML = `
+        <div class="media-empty-card">
+          <span>Nessuna partita in questa sezione al momento.</span>
+        </div>
+      `;
+      return;
+    }
+
     listEl.innerHTML = matches.map(m => {
+      const res = getMatchResultInfo(m);
       const dateStr = m.dateObj
         ? m.dateObj.toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
         : m.date;
-      const haBadge = m.isHome
-        ? `<span class="ha-tag ha-home" style="margin:0;">In Casa</span>`
-        : `<span class="ha-tag ha-away" style="margin:0;">Trasferta</span>`;
+      const haBadge = res.played
+        ? `<span class="lm-result-badge ${res.didWeWin ? 'is-win' : 'is-loss'}">${res.didWeWin ? 'Vittoria' : 'Sconfitta'}</span>`
+        : (m.isHome
+          ? `<span class="ha-tag ha-home" style="margin:0;">In Casa</span>`
+          : `<span class="ha-tag ha-away" style="margin:0;">Trasferta</span>`);
       const timeStr = (m.time || '18.00').replace('.', ':');
+      const centerSlot = res.played
+        ? `<span class="mc-score-pill ${res.didWeWin ? 'is-win' : 'is-loss'}">${res.scoreText}</span>`
+        : `<span class="mc-center-time">${escapeHtml(timeStr)}</span>`;
 
       return `
         <button type="button" class="matchup-card" data-action="open-match" data-match-id="${m.id}">
@@ -1207,7 +1377,7 @@
               <span class="mc-team-title ${m.team1.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(m.team1.title)}</span>
             </div>
 
-            <span class="mc-center-time">${escapeHtml(timeStr)}</span>
+            ${centerSlot}
 
             <div class="mc-team mc-team-right">
               <span class="mc-team-title ${m.team2.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(m.team2.title)}</span>
@@ -1215,9 +1385,15 @@
             </div>
           </div>
 
+          ${res.played && res.sets.length > 0 ? `
+            <div class="set-partials-row">
+              ${res.sets.map((s, idx) => `<span class="set-chip">${idx + 1}° Set: ${escapeHtml(s)}</span>`).join('')}
+            </div>
+          ` : ''}
+
           <div class="mc-footer">
             <span class="mc-gym">📍 ${escapeHtml(m.stadium)}</span>
-            <span style="color:var(--accent-blue); font-weight:600; flex-shrink:0;">Calendario &amp; Maps ›</span>
+            <span style="color:var(--accent-blue); font-weight:600; flex-shrink:0;">${res.played ? 'Dettaglio Set ›' : 'Calendario &amp; Maps ›'}</span>
           </div>
         </button>
       `;
@@ -1229,12 +1405,25 @@
     const m = matches.find(item => String(item.id) === String(matchId));
     if (!m) return;
 
+    const res = getMatchResultInfo(m);
     document.getElementById('sheetMatchGiornata').textContent = `${m.day} · Gara #${m.ng}`;
     document.getElementById('sheetMatchTitle').textContent = `${m.team1.title} vs ${m.team2.title}`;
 
     const fullDate = m.dateObj
       ? m.dateObj.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
       : m.date;
+
+    const centerEl = res.played
+      ? `<span class="mc-score-pill ${res.didWeWin ? 'is-win' : 'is-loss'}" style="font-size:1.05rem;">${res.scoreText}</span>`
+      : `<span class="mc-center-time">${escapeHtml((m.time || '').replace('.', ':'))}</span>`;
+
+    const refereeHtml = m['1referee'] && m['1referee'] !== 'DESIGNATO'
+      ? `<div style="font-size:0.78rem; color:var(--text-tertiary); margin-top:0.25rem;"><strong>1° Arbitro:</strong> ${escapeHtml(m['1referee'])}</div>`
+      : '';
+
+    const setsHtml = res.played && res.sets.length > 0
+      ? `<div class="set-partials-row" style="margin-top:0.55rem;">${res.sets.map((s, idx) => `<span class="set-chip">${idx + 1}° Set: ${escapeHtml(s)}</span>`).join('')}</div>`
+      : '';
 
     document.getElementById('sheetMatchBody').innerHTML = `
       <div class="entry-card" style="margin-bottom: 1rem;">
@@ -1243,19 +1432,22 @@
             <img src="${escapeHtml(getTeamLogo(m.team1))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
             <span class="mc-team-title ${m.team1.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(m.team1.title)}</span>
           </div>
-          <span class="mc-center-time">${escapeHtml((m.time || '').replace('.', ':'))}</span>
+          ${centerEl}
           <div class="mc-team mc-team-right">
             <span class="mc-team-title ${m.team2.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(m.team2.title)}</span>
             <img src="${escapeHtml(getTeamLogo(m.team2))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
           </div>
         </div>
-        <div class="entry-title" style="text-transform: capitalize; margin-top: 0.25rem;">${escapeHtml(fullDate)}</div>
+        ${res.played ? `<div style="margin-top:0.2rem;"><span class="lm-result-badge ${res.didWeWin ? 'is-win' : 'is-loss'}">${res.didWeWin ? 'Vittoria Volley Ladispoli' : 'Partita conclusa'}</span></div>` : ''}
+        ${setsHtml}
+        <div class="entry-title" style="text-transform: capitalize; margin-top: 0.45rem;">${escapeHtml(fullDate)}</div>
         <div class="entry-meta">
           <span>${m.isHome ? '🏠 Partita in Casa (Pallone N. Panzani)' : '🚌 Partita in Trasferta'}</span>
         </div>
         <div style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 0.25rem;">
           <strong>Palestra:</strong> ${escapeHtml(m.stadium)}
         </div>
+        ${refereeHtml}
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 0.55rem;">
@@ -1301,7 +1493,16 @@
 
     const meta = document.getElementById('fipavSyncMeta');
     if (meta) {
-      meta.textContent = 'Dati ufficiali FIPAV Comitato Territoriale Roma · Girone 64602';
+      let timeLabel = '';
+      if (state.fipavUpdatedAt) {
+        try {
+          const d = new Date(state.fipavUpdatedAt);
+          if (!isNaN(d.getTime())) {
+            timeLabel = ` · Aggiornato ${d.toLocaleDateString('it-IT', { day: '2-digit', month: 'short' })} alle ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
+          }
+        } catch (_) {}
+      }
+      meta.textContent = `Dati ufficiali FIPAV Comitato Territoriale Roma · Girone 64602${timeLabel}`;
     }
   }
 
@@ -1319,6 +1520,19 @@
     });
     giornate.sort((a, b) => (parseInt(a.replace(/\D+/g, ''), 10) || 0) - (parseInt(b.replace(/\D+/g, ''), 10) || 0));
 
+    if (!state.hasAutoSelectedRound) {
+      let latestPlayedRound = '';
+      for (const g of giornate) {
+        if (allMatches.some(m => m.day === g && isMatchPlayed(m))) {
+          latestPlayedRound = g;
+        }
+      }
+      if (latestPlayedRound) {
+        state.selectedGiornata = latestPlayedRound;
+      }
+      state.hasAutoSelectedRound = true;
+    }
+
     if (!giornate.includes(state.selectedGiornata) && giornate.length > 0) {
       state.selectedGiornata = giornate[0];
     }
@@ -1329,28 +1543,616 @@
 
     const roundMatches = allMatches.filter(m => m.day === state.selectedGiornata);
     listEl.innerHTML = roundMatches.map(m => {
-      const hasUs = m.team1?.id === LADISPOLI_TEAM_ID || m.team2?.id === LADISPOLI_TEAM_ID;
+      const hasUs = String(m.team1?.id) === LADISPOLI_TEAM_ID || String(m.team2?.id) === LADISPOLI_TEAM_ID;
+      const res = getMatchResultInfo(m);
+      const centerTag = res.played
+        ? `<span class="mc-score-pill ${hasUs ? (res.didWeWin ? 'is-win' : 'is-loss') : 'is-neutral'}">${res.scoreText}</span>`
+        : `<span class="sp-vs">vs</span>`;
+
       return `
         <div class="list-row" style="cursor:default; flex-direction:column; align-items:stretch; gap:0.45rem; ${hasUs ? 'background:var(--accent-red-soft);' : ''}">
           <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:var(--text-tertiary); font-weight:600;">
             <span>Gara #${escapeHtml(m.ng)} · ${escapeHtml(m.date)}</span>
-            <span>Ore ${escapeHtml((m.time || '').replace('.', ':'))}</span>
+            <span>${res.played ? 'Conclusa' : 'Ore ' + escapeHtml((m.time || '').replace('.', ':'))}</span>
           </div>
           <div class="mc-versus-row" style="border:none; padding:0.15rem 0;">
             <div class="mc-team">
               <img src="${escapeHtml(getTeamLogo(m.team1))}" alt="" class="mc-logo" style="width:28px; height:28px;" onerror="this.src='/logo-ladispoli.jpg'" />
-              <span class="mc-team-title ${m.team1?.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}" style="font-size:0.8rem;">${escapeHtml(m.team1?.title)}</span>
+              <span class="mc-team-title ${String(m.team1?.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}" style="font-size:0.8rem;">${escapeHtml(m.team1?.title)}</span>
             </div>
-            <span class="sp-vs">vs</span>
+            ${centerTag}
             <div class="mc-team mc-team-right">
-              <span class="mc-team-title ${m.team2?.id === LADISPOLI_TEAM_ID ? 'is-us' : ''}" style="font-size:0.8rem;">${escapeHtml(m.team2?.title)}</span>
+              <span class="mc-team-title ${String(m.team2?.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}" style="font-size:0.8rem;">${escapeHtml(m.team2?.title)}</span>
               <img src="${escapeHtml(getTeamLogo(m.team2))}" alt="" class="mc-logo" style="width:28px; height:28px;" onerror="this.src='/logo-ladispoli.jpg'" />
             </div>
           </div>
+          ${res.played && res.sets.length > 0 ? `
+            <div class="set-partials-row">
+              ${res.sets.map(s => `<span class="set-chip">${escapeHtml(s)}</span>`).join('')}
+            </div>
+          ` : ''}
           <div style="font-size:0.72rem; color:var(--text-tertiary);">📍 ${escapeHtml(m.stadium)}</div>
         </div>
       `;
     }).join('');
+  }
+
+  // ==========================================
+  // GOOGLE ACCOUNT & PWA INSTALL
+  // ==========================================
+  let googleInitStarted = false;
+  let googleButtonRendered = false;
+
+  function updateAccountChrome() {
+    const btn = document.getElementById('btnAccountToggle');
+    const av = document.getElementById('accountPillAvatar');
+    const gIcon = document.getElementById('accountGoogleIcon');
+    const label = document.getElementById('accountPillLabel');
+    if (!btn || !av || !gIcon || !label) return;
+
+    if (state.currentUser) {
+      btn.classList.add('is-signed-in');
+      gIcon.classList.add('hidden');
+      av.classList.remove('hidden');
+      const firstName = (state.currentUser.name || 'Tu').split(' ')[0];
+      label.textContent = firstName;
+      if (state.currentUser.picture) {
+        av.innerHTML = `<img src="${escapeHtml(state.currentUser.picture)}" alt="" />`;
+      } else {
+        av.textContent = getInitials(state.currentUser.name);
+      }
+    } else {
+      btn.classList.remove('is-signed-in');
+      av.classList.add('hidden');
+      av.innerHTML = '';
+      gIcon.classList.remove('hidden');
+      label.textContent = 'Accedi';
+    }
+  }
+
+  function renderPwaInstallState() {
+    const row = document.getElementById('pwaInstallRow');
+    const hint = document.getElementById('pwaInstallHint');
+    const btn = document.getElementById('btnPwaInstall');
+    if (!row || !hint || !btn) return;
+
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    if (isStandalone) {
+      hint.textContent = 'App già installata e avviata a schermo intero.';
+      btn.classList.add('hidden');
+      return;
+    }
+
+    if (state.deferredInstallPrompt) {
+      hint.textContent = 'Installa Volley Ladispoli sulla schermata Home in 1 tocco.';
+      btn.classList.remove('hidden');
+    } else {
+      const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      hint.textContent = isIos
+        ? 'Su iPhone/iPad tocca Condividi (in basso) poi "Aggiungi alla schermata Home".'
+        : 'Dal menu del browser (⋮) tocca "Installa app" o "Aggiungi a schermata Home".';
+      btn.classList.add('hidden');
+    }
+  }
+
+  function initGoogleSignIn() {
+    if (!state.appConfig.googleClientId || googleInitStarted) return;
+
+    let attempts = 0;
+    const tryInit = () => {
+      if (window.google?.accounts?.id) {
+        googleInitStarted = true;
+        window.google.accounts.id.initialize({
+          client_id: state.appConfig.googleClientId,
+          callback: handleGoogleCredentialResponse
+        });
+        renderGoogleSignInButton();
+      } else if (attempts < 25) {
+        attempts += 1;
+        setTimeout(tryInit, 200);
+      }
+    };
+    tryInit();
+  }
+
+  function renderGoogleSignInButton() {
+    const wrap = document.getElementById('googleSignInBtnContainer');
+    const missingNote = document.getElementById('googleConfigMissingNote');
+    if (!wrap) return;
+
+    if (!state.appConfig.googleClientId) {
+      wrap.innerHTML = '';
+      missingNote?.classList.remove('hidden');
+      return;
+    }
+
+    missingNote?.classList.add('hidden');
+    if (window.google?.accounts?.id && !googleButtonRendered) {
+      wrap.innerHTML = '';
+      window.google.accounts.id.renderButton(wrap, {
+        theme: 'outline',
+        size: 'large',
+        shape: 'pill',
+        text: 'signin_with',
+        locale: 'it'
+      });
+      googleButtonRendered = true;
+    }
+  }
+
+  async function handleGoogleCredentialResponse(response) {
+    if (!response || !response.credential) return;
+    try {
+      const res = await apiFetch('/api/auth/google', {
+        method: 'POST',
+        body: JSON.stringify({ credential: response.credential })
+      });
+      state.currentUser = res.user;
+      updateAccountChrome();
+      closeSheet('sheetAccount');
+      renderMediaView();
+      showToast(`Benvenuto, ${(res.user.name || '').split(' ')[0]}!`);
+
+      if (typeof state.pendingLoginCallback === 'function') {
+        const cb = state.pendingLoginCallback;
+        state.pendingLoginCallback = null;
+        cb();
+      }
+    } catch (err) {
+      showToast(err.message || 'Accesso Google non riuscito');
+    }
+  }
+
+  function openAccountSheet(onLoginCallback = null) {
+    state.pendingLoginCallback = onLoginCallback;
+    const outPanel = document.getElementById('accountLoggedOutPanel');
+    const inPanel = document.getElementById('accountLoggedInPanel');
+    const title = document.getElementById('sheetAccountTitle');
+    const sub = document.getElementById('sheetAccountSubtitle');
+
+    if (state.currentUser) {
+      title.textContent = 'Il tuo Profilo';
+      sub.textContent = 'Collegato con Google · Tracking social attivo';
+      outPanel.classList.add('hidden');
+      inPanel.classList.remove('hidden');
+
+      const av = document.getElementById('accountUserAvatar');
+      av.src = state.currentUser.picture || '/logo-ladispoli.jpg';
+      document.getElementById('accountUserName').textContent = state.currentUser.name || 'Giocatore';
+      document.getElementById('accountUserEmail').textContent = state.currentUser.email || '';
+
+      const uid = state.currentUser.id;
+      const vidCount = state.videos.filter(v => v.authorId === uid).length;
+      const sockCount = state.socks.filter(s => s.authorId === uid).length;
+      const likesReceived = state.videos
+        .filter(v => v.authorId === uid)
+        .reduce((sum, v) => sum + (Array.isArray(v.likes) ? v.likes.length : 0), 0) +
+        state.socks
+          .filter(s => s.authorId === uid)
+          .reduce((sum, s) => sum + (Array.isArray(s.upvotes) ? s.upvotes.length : 0), 0);
+
+      document.getElementById('accountUserStats').innerHTML = `
+        <div class="sheet-kpi-box">
+          <div class="sheet-kpi-num">${vidCount}</div>
+          <span class="sheet-kpi-label">Video</span>
+        </div>
+        <div class="sheet-kpi-box">
+          <div class="sheet-kpi-num">${sockCount}</div>
+          <span class="sheet-kpi-label">Calzini</span>
+        </div>
+        <div class="sheet-kpi-box">
+          <div class="sheet-kpi-num" style="color:var(--accent-red);">${likesReceived}</div>
+          <span class="sheet-kpi-label">Voti ricevuti</span>
+        </div>
+      `;
+
+      const sel = document.getElementById('accountLinkPlayerSelect');
+      const currentPid = state.currentUser.linkedPlayerId || '';
+      sel.innerHTML = `<option value="">-- Nessun giocatore collegato --</option>` +
+        state.players.map(p => `<option value="${p.id}" ${p.id === currentPid ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+    } else {
+      title.textContent = 'Accedi con Google';
+      sub.textContent = 'Carica video, partecipa ai calzini e vota come sui social';
+      inPanel.classList.add('hidden');
+      outPanel.classList.remove('hidden');
+      renderGoogleSignInButton();
+    }
+
+    renderPwaInstallState();
+    openSheet('sheetAccount');
+  }
+
+  function requireGoogleLogin(callback, allowAdminFallback = false) {
+    if (state.currentUser) {
+      return callback();
+    }
+    if (allowAdminFallback && state.isAdmin && state.adminCode) {
+      return callback();
+    }
+    showToast('Accedi con Google per continuare');
+    openAccountSheet(callback);
+  }
+
+  // ==========================================
+  // MEDIA: VIDEOS & STYLISH SOCKS
+  // ==========================================
+  function detectVideoPlatform(url) {
+    const val = String(url || '').trim();
+    if (!val) return '';
+    const low = val.toLowerCase();
+    if (low.includes('drive.google.com') || low.includes('docs.google.com')) return 'Google Drive rilevato';
+    if (low.includes('youtube.com') || low.includes('youtu.be')) return 'YouTube / Shorts rilevato';
+    if (low.includes('instagram.com')) return 'Instagram Reels rilevato';
+    if (low.includes('tiktok.com')) return 'TikTok rilevato';
+    if (/\.(mp4|mov|webm)(\?|$)/i.test(low) || low.includes('cloudinary.com')) return 'Video diretto MP4 rilevato';
+    if (val.startsWith('http://') || val.startsWith('https://')) return 'Link video rilevato';
+    return '';
+  }
+
+  function getSourceBadgeText(sourceType) {
+    if (sourceType === 'gdrive') return 'Google Drive';
+    if (sourceType === 'youtube') return 'YouTube';
+    if (sourceType === 'instagram') return 'Instagram';
+    if (sourceType === 'tiktok') return 'TikTok';
+    return 'Video MP4';
+  }
+
+  function formatRelativeTime(iso) {
+    if (!iso) return '';
+    try {
+      const dt = new Date(iso);
+      const diffMin = Math.floor((Date.now() - dt.getTime()) / 60000);
+      if (diffMin < 1) return 'Adesso';
+      if (diffMin < 60) return `${diffMin}m fa`;
+      const diffH = Math.floor(diffMin / 60);
+      if (diffH < 24) return `${diffH}h fa`;
+      return dt.toLocaleDateString('it-IT', { day: '2-digit', month: 'short' });
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function renderAuthorAvatarHtml(item) {
+    const linkedPlayer = item.authorPlayerId ? state.players.find(p => p.id === item.authorPlayerId) : null;
+    const photo = linkedPlayer?.avatarUrl || item.authorPicture;
+    const displayName = linkedPlayer ? linkedPlayer.name : (item.authorName || 'Squadra');
+    if (photo) {
+      return `<img src="${escapeHtml(photo)}" alt="" class="social-author-avatar" />`;
+    }
+    return `<div class="social-author-avatar" style="background:${linkedPlayer?.avatarColor || '#515158'}">${getInitials(displayName)}</div>`;
+  }
+
+  function renderMediaView() {
+    const vidPane = document.getElementById('mediaVideosPane');
+    const sockPane = document.getElementById('mediaSocksPane');
+    if (!vidPane || !sockPane) return;
+
+    if (state.mediaTab === 'socks') {
+      vidPane.classList.add('hidden');
+      sockPane.classList.remove('hidden');
+      renderSocksFeed();
+    } else {
+      sockPane.classList.add('hidden');
+      vidPane.classList.remove('hidden');
+      const heading = document.getElementById('mediaVideosHeading');
+      const sub = document.getElementById('mediaVideosSub');
+      if (state.mediaTab === 'match') {
+        heading.textContent = 'Video Partite & Allenamenti';
+        sub.textContent = 'Azioni di gioco, set e allenamenti da Drive o MP4';
+      } else {
+        heading.textContent = 'Video divertenti della squadra';
+        sub.textContent = 'Momenti dello spogliatoio da Drive, YouTube, Reels o MP4';
+      }
+      renderVideosFeed();
+    }
+  }
+
+  function renderVideosFeed() {
+    const listEl = document.getElementById('videosFeedList');
+    if (!listEl) return;
+
+    const category = state.mediaTab === 'match' ? 'match' : 'funny';
+    const items = (state.videos || []).filter(v => (v.category || 'funny') === category);
+
+    if (items.length === 0) {
+      listEl.innerHTML = `
+        <div class="media-empty-card">
+          <div style="font-size:1.5rem;">🎬</div>
+          <div>Nessun video in "${category === 'match' ? 'Partite / Allenamenti' : 'Divertenti'}" ancora.</div>
+          <button type="button" class="btn-small-primary" onclick="document.getElementById('btnOpenUploadVideo').click()">
+            + Carica il primo video
+          </button>
+        </div>
+      `;
+      return;
+    }
+
+    const uid = state.currentUser?.id || '';
+    listEl.innerHTML = items.map(v => {
+      const likes = Array.isArray(v.likes) ? v.likes : [];
+      const isLiked = uid && likes.includes(uid);
+      const linkedPlayer = v.authorPlayerId ? state.players.find(p => p.id === v.authorPlayerId) : null;
+      const authorLabel = linkedPlayer ? `${v.authorName} (${linkedPlayer.name})` : (v.authorName || 'Compagno');
+      const canDelete = state.isAdmin || (uid && uid === v.authorId);
+
+      let playerHtml = '';
+      if (v.sourceType === 'mp4') {
+        playerHtml = `
+          <div class="video-frame-wrap">
+            <video src="${escapeHtml(v.mediaUrl)}" controls playsinline preload="metadata"></video>
+          </div>
+        `;
+      } else if (v.embedUrl) {
+        playerHtml = `
+          <div class="video-frame-wrap">
+            <iframe src="${escapeHtml(v.embedUrl)}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe>
+          </div>
+        `;
+      } else {
+        playerHtml = `
+          <a href="${escapeHtml(v.mediaUrl)}" target="_blank" rel="noopener noreferrer" class="video-ext-card">
+            <div>
+              <div style="font-weight:700; font-size:0.86rem;">Apri su ${getSourceBadgeText(v.sourceType)}</div>
+              <div style="font-size:0.74rem; color:var(--text-tertiary);">Tocca per guardare il video nel player esterno</div>
+            </div>
+            <span style="font-size:1.1rem; font-weight:700;">↗</span>
+          </a>
+        `;
+      }
+
+      return `
+        <article class="video-card">
+          <div class="video-author-row">
+            <div class="video-author-left">
+              ${renderAuthorAvatarHtml(v)}
+              <div>
+                <div class="video-author-name">${escapeHtml(authorLabel)}</div>
+                <div class="video-author-meta">${escapeHtml(formatRelativeTime(v.createdAt))}</div>
+              </div>
+            </div>
+            <span class="video-source-badge">${getSourceBadgeText(v.sourceType)}</span>
+          </div>
+
+          <div class="video-title">${escapeHtml(v.title)}</div>
+          ${v.description ? `<div class="video-desc">${escapeHtml(v.description)}</div>` : ''}
+
+          ${playerHtml}
+
+          <div class="video-footer">
+            <button type="button" class="like-btn ${isLiked ? 'is-liked' : ''}" data-action="like-video" data-video-id="${v.id}">
+              <span>${isLiked ? '❤️' : '🤍'}</span>
+              <span>${likes.length}</span>
+            </button>
+            <div style="display:flex; align-items:center; gap:0.75rem;">
+              <a href="${escapeHtml(v.mediaUrl)}" target="_blank" rel="noopener noreferrer" class="text-action-btn" style="font-size:0.76rem;">Apri link ↗</a>
+              ${canDelete ? `<button type="button" class="text-action-btn" style="color:var(--accent-red); font-size:0.76rem;" data-action="delete-video" data-video-id="${v.id}">Elimina</button>` : ''}
+            </div>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function renderSocksFeed() {
+    const listEl = document.getElementById('socksFeedList');
+    if (!listEl) return;
+
+    const items = [...(state.socks || [])];
+    if (state.sockSort === 'top') {
+      items.sort((a, b) => {
+        const diff = (b.upvotes?.length || 0) - (a.upvotes?.length || 0);
+        if (diff !== 0) return diff;
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      });
+    } else {
+      items.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    }
+
+    if (items.length === 0) {
+      listEl.innerHTML = `
+        <div class="media-empty-card" style="grid-column: 1 / -1;">
+          <div style="font-size:1.6rem;">🧦</div>
+          <div>Nessun calzino caricato ancora.</div>
+          <button type="button" class="btn-small-primary" onclick="document.getElementById('btnOpenUploadSock').click()">
+            + Carica i tuoi calzini
+          </button>
+        </div>
+      `;
+      return;
+    }
+
+    // Compute rank map by upvotes so #1/2/3 reflect leaderboard
+    const rankedIds = [...items]
+      .sort((a, b) => (b.upvotes?.length || 0) - (a.upvotes?.length || 0))
+      .map(s => s.id);
+
+    const uid = state.currentUser?.id || '';
+    listEl.innerHTML = items.map(s => {
+      const upvotes = Array.isArray(s.upvotes) ? s.upvotes : [];
+      const isUpvoted = uid && upvotes.includes(uid);
+      const rankNum = rankedIds.indexOf(s.id) + 1;
+      const rankCls = rankNum <= 3 ? `rank-${rankNum}` : '';
+      const medal = rankNum === 1 ? '🥇 #1' : rankNum === 2 ? '🥈 #2' : rankNum === 3 ? '🥉 #3' : `#${rankNum}`;
+      const ownerPlayer = s.playerId ? state.players.find(p => p.id === s.playerId) : null;
+      const metaText = ownerPlayer
+        ? `Di ${ownerPlayer.name} · postato da ${(s.authorName || '').split(' ')[0]}`
+        : `Postato da ${s.authorName || 'Compagno'} · ${formatRelativeTime(s.createdAt)}`;
+      const canDelete = state.isAdmin || (uid && uid === s.authorId);
+
+      return `
+        <article class="sock-card">
+          <span class="sock-rank-badge ${rankCls}">${medal}</span>
+          <button type="button" class="sock-photo-btn" data-action="open-lightbox" data-img-url="${escapeHtml(s.imageUrl)}" data-caption="${escapeHtml(s.title)}">
+            <img src="${escapeHtml(s.imageUrl)}" alt="${escapeHtml(s.title)}" class="sock-photo-img" loading="lazy" />
+          </button>
+          <div class="sock-card-body">
+            <div>
+              <div class="sock-title">${escapeHtml(s.title)}</div>
+              <div class="sock-meta">${escapeHtml(metaText)}</div>
+            </div>
+            <div class="sock-actions-row">
+              <button type="button" class="upvote-btn ${isUpvoted ? 'is-upvoted' : ''}" data-action="upvote-sock" data-sock-id="${s.id}">
+                <span>▲</span>
+                <span>${upvotes.length}</span>
+              </button>
+              ${canDelete ? `<button type="button" class="text-action-btn" style="color:var(--accent-red); font-size:0.75rem;" data-action="delete-sock" data-sock-id="${s.id}">Elimina</button>` : ''}
+            </div>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function compressImageToJpeg(file, maxDim = 1080, quality = 0.82) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width >= height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/jpeg', quality);
+          canvas.toBlob(blob => resolve({ dataUrl, blob }), 'image/jpeg', quality);
+        };
+        img.onerror = () => reject(new Error('Immagine non valida'));
+        img.src = reader.result;
+      };
+      reader.onerror = () => reject(new Error('Errore lettura file'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadFileToMediaStorage(file, folder, resourceType, onProgress) {
+    if (state.appConfig.cloudinaryEnabled) {
+      const sig = await apiFetch('/api/upload/signature', {
+        method: 'POST',
+        body: JSON.stringify({ folder })
+      });
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('api_key', sig.apiKey);
+      formData.append('timestamp', String(sig.timestamp));
+      formData.append('folder', sig.folder);
+      formData.append('signature', sig.signature);
+
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `https://api.cloudinary.com/v1_1/${sig.cloudName}/${resourceType}/upload`);
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable && typeof onProgress === 'function') {
+            onProgress(Math.round((ev.loaded / ev.total) * 100));
+          }
+        };
+        xhr.onload = () => {
+          try {
+            const parsed = JSON.parse(xhr.responseText);
+            if (xhr.status >= 200 && xhr.status < 300 && parsed.secure_url) {
+              resolve({ url: parsed.secure_url, thumbUrl: '' });
+            } else {
+              reject(new Error(parsed?.error?.message || 'Errore upload Cloudinary'));
+            }
+          } catch (_) {
+            reject(new Error('Risposta Cloudinary non valida'));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Errore di rete durante upload'));
+        xhr.send(formData);
+      });
+    }
+
+    // Local fallback (max 15 MB)
+    if (file.size > 15 * 1024 * 1024) {
+      throw new Error('File oltre 15 MB: usa un link Google Drive oppure configura Cloudinary Free');
+    }
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload/file');
+      xhr.withCredentials = true;
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name || 'media.mp4'));
+      if (state.adminCode) {
+        xhr.setRequestHeader('X-Admin-Code', state.adminCode);
+      }
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable && typeof onProgress === 'function') {
+          onProgress(Math.round((ev.loaded / ev.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        try {
+          const parsed = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300 && parsed.url) {
+            resolve({ url: parsed.url, thumbUrl: '' });
+          } else {
+            reject(new Error(parsed?.error || 'Errore upload file'));
+          }
+        } catch (_) {
+          reject(new Error('Errore risposta server upload'));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Errore di rete upload'));
+      xhr.send(file);
+    });
+  }
+
+  function openUploadVideoSheet() {
+    requireGoogleLogin(() => {
+      const defaultCat = state.mediaTab === 'match' ? 'match' : 'funny';
+      document.getElementById('videoCategoryInput').value = defaultCat;
+      document.querySelectorAll('#videoCategoryTabs .seg-btn').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-vcat') === defaultCat);
+      });
+
+      state.videoUploadSource = 'link';
+      document.querySelectorAll('#videoSourceTabs .seg-btn').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-vsrc') === 'link');
+      });
+      document.getElementById('videoLinkPane').classList.remove('hidden');
+      document.getElementById('videoFilePane').classList.add('hidden');
+      document.getElementById('videoUrlInput').value = '';
+      document.getElementById('videoUrlDetectedBadge').classList.add('hidden');
+      document.getElementById('videoFileInput').value = '';
+      document.getElementById('videoFileDropLabel').textContent = 'Tocca per selezionare un video MP4 / MOV / WEBM';
+      document.getElementById('videoFileHint').textContent = state.appConfig.cloudinaryEnabled
+        ? 'Cloudinary attivo: supporta file video fino a 100 MB.'
+        : 'Upload diretto fino a 15 MB (per video lunghi usa Link Google Drive).';
+      document.getElementById('videoUploadProgressWrap').classList.add('hidden');
+      document.getElementById('videoTitleInput').value = '';
+      document.getElementById('videoDescInput').value = '';
+      openSheet('sheetUploadVideo');
+    }, true);
+  }
+
+  function openUploadSockSheet() {
+    requireGoogleLogin(() => {
+      state.sockCompressedDataUrl = '';
+      state.sockRawFile = null;
+      document.getElementById('sockPhotoInput').value = '';
+      document.getElementById('sockDropLabel').textContent = 'Tocca per scegliere o scattare la foto';
+      document.getElementById('sockPhotoPreviewWrap').classList.add('hidden');
+      document.getElementById('sockUploadProgressWrap').classList.add('hidden');
+      document.getElementById('sockTitleInput').value = '';
+
+      const sel = document.getElementById('sockPlayerSelect');
+      const linked = state.currentUser?.linkedPlayerId || '';
+      sel.innerHTML = `<option value="">-- Non specificato --</option>` +
+        state.players.map(p => `<option value="${p.id}" ${p.id === linked ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+
+      openSheet('sheetUploadSock');
+    }, true);
   }
 
   // ==========================================
@@ -1419,7 +2221,8 @@
     // Bottom Bar "+ Segna" Button
     document.getElementById('btnFabAddPaste').addEventListener('click', () => openPasteFormSheet());
 
-    // Topbar Admin
+    // Topbar Account & Admin
+    document.getElementById('btnAccountToggle').addEventListener('click', () => openAccountSheet());
     document.getElementById('btnAdminToggle').addEventListener('click', () => openAdminSheet());
 
     // Sheet Close Buttons & Backdrop click
@@ -1430,6 +2233,40 @@
       backdrop.addEventListener('click', (e) => {
         if (e.target === backdrop) closeSheet(backdrop.id);
       });
+    });
+
+    // Account Sheet: Link Player, Logout & PWA Install
+    document.getElementById('accountLinkPlayerSelect').addEventListener('change', async (e) => {
+      try {
+        const res = await apiFetch('/api/auth/link-player', {
+          method: 'POST',
+          body: JSON.stringify({ playerId: e.target.value })
+        });
+        state.currentUser = res.user;
+        renderMediaView();
+        showToast('Profilo giocatore aggiornato');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    document.getElementById('btnLogoutGoogle').addEventListener('click', async () => {
+      try {
+        await apiFetch('/api/auth/logout', { method: 'POST' });
+      } catch (_) {}
+      state.currentUser = null;
+      updateAccountChrome();
+      closeSheet('sheetAccount');
+      renderMediaView();
+      showToast('Uscito dall\'account Google');
+    });
+
+    document.getElementById('btnPwaInstall').addEventListener('click', async () => {
+      if (!state.deferredInstallPrompt) return;
+      state.deferredInstallPrompt.prompt();
+      await state.deferredInstallPrompt.userChoice;
+      state.deferredInstallPrompt = null;
+      renderPwaInstallState();
     });
 
     // Sort Toggle (Priorità vs A-Z)
@@ -1504,6 +2341,7 @@
 
       if (!providedCode) {
         showToast('Inserisci il codice Admin');
+        document.getElementById('formAdminCodeInput')?.focus();
         return;
       }
 
@@ -1535,6 +2373,12 @@
         saveAsPreset: false
       };
 
+      const submitBtn = document.getElementById('btnSubmitPasteForm');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Salvataggio...';
+      }
+
       try {
         if (entryId) {
           const res = await apiFetch(`/api/paste/${entryId}`, {
@@ -1557,6 +2401,11 @@
         renderPasteView();
       } catch (err) {
         showToast(err.message || 'Codice Admin non valido');
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Conferma';
+        }
       }
     });
 
@@ -1580,6 +2429,7 @@
           state.isAdmin = true;
           updateAdminChrome();
           renderPasteView();
+          renderMediaView();
           showToast('Modalità Admin temporanea attiva');
         }
       } catch (err) {
@@ -1611,6 +2461,7 @@
       updateAdminChrome();
       closeSheet('sheetAdmin');
       renderPasteView();
+      renderMediaView();
       showToast('Sessione Admin bloccata');
     });
 
@@ -1653,9 +2504,198 @@
     });
 
     document.getElementById('btnRefreshFipav').addEventListener('click', () => loadFipavData(true));
+    document.getElementById('btnRefreshFipavCal')?.addEventListener('click', () => loadFipavData(true));
     document.getElementById('giornataSelect').addEventListener('change', (e) => {
       state.selectedGiornata = e.target.value;
       renderGironeMatchesByRound();
+    });
+
+    // MEDIA VIEW CONTROLS (Divertenti / Partite / Calzini)
+    document.querySelectorAll('#mediaTabControl .seg-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.mediaTab = btn.getAttribute('data-mediatab');
+        document.querySelectorAll('#mediaTabControl .seg-btn').forEach(b => b.classList.toggle('active', b === btn));
+        renderMediaView();
+      });
+    });
+
+    document.getElementById('btnOpenUploadVideo').addEventListener('click', openUploadVideoSheet);
+    document.getElementById('btnOpenUploadSock').addEventListener('click', openUploadSockSheet);
+
+    const btnSockSort = document.getElementById('btnSockSortToggle');
+    btnSockSort.addEventListener('click', () => {
+      state.sockSort = state.sockSort === 'top' ? 'recent' : 'top';
+      btnSockSort.textContent = state.sockSort === 'top' ? 'Più votati' : 'Più recenti';
+      renderSocksFeed();
+    });
+
+    // Upload Video Form Controls
+    document.querySelectorAll('#videoCategoryTabs .seg-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cat = btn.getAttribute('data-vcat');
+        document.getElementById('videoCategoryInput').value = cat;
+        document.querySelectorAll('#videoCategoryTabs .seg-btn').forEach(b => b.classList.toggle('active', b === btn));
+      });
+    });
+
+    document.querySelectorAll('#videoSourceTabs .seg-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const src = btn.getAttribute('data-vsrc');
+        state.videoUploadSource = src;
+        document.querySelectorAll('#videoSourceTabs .seg-btn').forEach(b => b.classList.toggle('active', b === btn));
+        document.getElementById('videoLinkPane').classList.toggle('hidden', src !== 'link');
+        document.getElementById('videoFilePane').classList.toggle('hidden', src !== 'file');
+      });
+    });
+
+    document.getElementById('videoUrlInput').addEventListener('input', (e) => {
+      const badge = document.getElementById('videoUrlDetectedBadge');
+      const detected = detectVideoPlatform(e.target.value);
+      if (detected) {
+        badge.textContent = detected;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+    });
+
+    document.getElementById('videoFileInput').addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      const lbl = document.getElementById('videoFileDropLabel');
+      if (file) {
+        const mb = (file.size / (1024 * 1024)).toFixed(1);
+        lbl.textContent = `${file.name} (${mb} MB)`;
+      } else {
+        lbl.textContent = 'Tocca per selezionare un video MP4 / MOV / WEBM';
+      }
+    });
+
+    document.getElementById('formUploadVideo').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const title = document.getElementById('videoTitleInput').value.trim();
+      const description = document.getElementById('videoDescInput').value.trim();
+      const category = document.getElementById('videoCategoryInput').value;
+      const submitBtn = document.getElementById('btnSubmitVideo');
+
+      if (!title) {
+        showToast('Inserisci il titolo del video');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Pubblicazione...';
+
+      try {
+        let mediaUrl = '';
+        let thumbUrl = '';
+
+        if (state.videoUploadSource === 'file') {
+          const file = document.getElementById('videoFileInput').files?.[0];
+          if (!file) {
+            throw new Error('Seleziona prima un file video dal telefono');
+          }
+          const progWrap = document.getElementById('videoUploadProgressWrap');
+          const progBar = document.getElementById('videoUploadProgressBar');
+          const progText = document.getElementById('videoUploadProgressText');
+          progWrap.classList.remove('hidden');
+          const uploaded = await uploadFileToMediaStorage(file, 'videos', 'video', (pct) => {
+            progBar.style.width = `${pct}%`;
+            progText.textContent = `${pct}%`;
+          });
+          mediaUrl = uploaded.url;
+          thumbUrl = uploaded.thumbUrl || '';
+        } else {
+          mediaUrl = document.getElementById('videoUrlInput').value.trim();
+          if (!mediaUrl) {
+            throw new Error('Incolla il link del video');
+          }
+        }
+
+        const res = await apiFetch('/api/videos', {
+          method: 'POST',
+          body: JSON.stringify({ category, title, description, mediaUrl, thumbUrl })
+        });
+        state.videos = res.videos;
+        saveLocalBackup();
+        closeSheet('sheetUploadVideo');
+
+        state.mediaTab = category === 'match' ? 'match' : 'funny';
+        document.querySelectorAll('#mediaTabControl .seg-btn').forEach(b => {
+          b.classList.toggle('active', b.getAttribute('data-mediatab') === state.mediaTab);
+        });
+        renderMediaView();
+        showToast('Video pubblicato nello spogliatoio!');
+      } catch (err) {
+        showToast(err.message || 'Errore pubblicazione video');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Pubblica Video';
+      }
+    });
+
+    // Upload Stylish Sock Form
+    document.getElementById('sockPhotoInput').addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      document.getElementById('sockDropLabel').textContent = file.name;
+      try {
+        const compressed = await compressImageToJpeg(file, 1080, 0.82);
+        state.sockCompressedDataUrl = compressed.dataUrl;
+        state.sockRawFile = compressed.blob || file;
+        document.getElementById('sockPhotoPreviewImg').src = compressed.dataUrl;
+        document.getElementById('sockPhotoPreviewWrap').classList.remove('hidden');
+      } catch (err) {
+        showToast('Immagine non leggibile');
+      }
+    });
+
+    document.getElementById('formUploadSock').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const title = document.getElementById('sockTitleInput').value.trim();
+      const playerId = document.getElementById('sockPlayerSelect').value;
+      const submitBtn = document.getElementById('btnSubmitSock');
+
+      if (!state.sockCompressedDataUrl) {
+        showToast('Scegli prima una foto dei calzini');
+        return;
+      }
+      if (!title) {
+        showToast('Dai un titolo ai calzini');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Pubblicazione...';
+
+      try {
+        let imageUrl = state.sockCompressedDataUrl;
+        if (state.appConfig.cloudinaryEnabled && state.sockRawFile) {
+          const progWrap = document.getElementById('sockUploadProgressWrap');
+          const progBar = document.getElementById('sockUploadProgressBar');
+          const progText = document.getElementById('sockUploadProgressText');
+          progWrap.classList.remove('hidden');
+          const uploaded = await uploadFileToMediaStorage(state.sockRawFile, 'socks', 'image', (pct) => {
+            progBar.style.width = `${pct}%`;
+            progText.textContent = `${pct}%`;
+          });
+          imageUrl = uploaded.url;
+        }
+
+        const res = await apiFetch('/api/socks', {
+          method: 'POST',
+          body: JSON.stringify({ title, playerId, imageUrl })
+        });
+        state.socks = res.socks;
+        saveLocalBackup();
+        closeSheet('sheetUploadSock');
+        renderMediaView();
+        showToast('Calzini caricati! Che la sfida abbia inizio 🧦');
+      } catch (err) {
+        showToast(err.message || 'Errore pubblicazione calzini');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Pubblica Calzini';
+      }
     });
 
     // Delegated Click Handler
@@ -1751,13 +2791,99 @@
           downloadIcsFile(`volley-ladispoli-${m.day.toLowerCase().replace(/\s+/g, '-')}.ics`, generateIcsContent([m]));
           showToast('File .ics scaricato');
         }
+      } else if (action === 'like-video') {
+        const vidId = actionEl.getAttribute('data-video-id');
+        requireGoogleLogin(async () => {
+          try {
+            const res = await apiFetch(`/api/videos/${vidId}/like`, { method: 'POST' });
+            state.videos = res.videos;
+            saveLocalBackup();
+            renderVideosFeed();
+          } catch (err) {
+            showToast(err.message);
+          }
+        });
+      } else if (action === 'delete-video') {
+        const vidId = actionEl.getAttribute('data-video-id');
+        const doDelete = async (code = '') => {
+          try {
+            const res = await apiFetch(`/api/videos/${vidId}`, {
+              method: 'DELETE',
+              body: JSON.stringify({ adminCode: code || state.adminCode })
+            });
+            state.videos = res.videos;
+            saveLocalBackup();
+            renderVideosFeed();
+            showToast('Video eliminato');
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+        if (state.currentUser || state.isAdmin) {
+          doDelete();
+        } else {
+          ensureAdminOrPrompt(doDelete);
+        }
+      } else if (action === 'upvote-sock') {
+        const sockId = actionEl.getAttribute('data-sock-id');
+        requireGoogleLogin(async () => {
+          try {
+            const res = await apiFetch(`/api/socks/${sockId}/upvote`, { method: 'POST' });
+            state.socks = res.socks;
+            saveLocalBackup();
+            renderSocksFeed();
+          } catch (err) {
+            showToast(err.message);
+          }
+        });
+      } else if (action === 'delete-sock') {
+        const sockId = actionEl.getAttribute('data-sock-id');
+        const doDelete = async (code = '') => {
+          try {
+            const res = await apiFetch(`/api/socks/${sockId}`, {
+              method: 'DELETE',
+              body: JSON.stringify({ adminCode: code || state.adminCode })
+            });
+            state.socks = res.socks;
+            saveLocalBackup();
+            renderSocksFeed();
+            showToast('Calzini eliminati');
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+        if (state.currentUser || state.isAdmin) {
+          doDelete();
+        } else {
+          ensureAdminOrPrompt(doDelete);
+        }
+      } else if (action === 'open-lightbox') {
+        const imgUrl = actionEl.getAttribute('data-img-url');
+        const cap = actionEl.getAttribute('data-caption') || '';
+        document.getElementById('lightboxImg').src = imgUrl;
+        document.getElementById('lightboxCaption').textContent = cap;
+        openSheet('sheetImageLightbox');
       }
     });
   }
 
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    state.deferredInstallPrompt = e;
+    renderPwaInstallState();
+  });
+
+  window.addEventListener('appinstalled', () => {
+    state.deferredInstallPrompt = null;
+    renderPwaInstallState();
+    showToast('App Volley Ladispoli installata!');
+  });
+
   document.addEventListener('DOMContentLoaded', () => {
     initEvents();
     attachSheetDragPhysics();
+    registerServiceWorker();
+    loadAppConfig();
     loadAppState();
     loadFipavData(false);
   });
