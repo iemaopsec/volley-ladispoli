@@ -1739,6 +1739,10 @@ body {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
+.inc-tab.inc-tab-full {
+  grid-column: 1 / -1;
+}
+
 .admin-Inline-box {
   background: var(--bg-canvas);
   border: 1px solid var(--border-card);

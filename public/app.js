@@ -185,11 +185,12 @@
     el.className = 'toast-item';
     el.textContent = msg;
     container.appendChild(el);
+    const duration = String(msg || '').length > 55 ? 4500 : 2600;
     setTimeout(() => {
       el.style.opacity = '0';
       el.style.transform = 'translateY(-6px)';
       setTimeout(() => el.remove(), 220);
-    }, 2600);
+    }, duration);
   }
 
   // ==========================================
@@ -360,6 +361,10 @@
     };
   }
 
+  function formatIncidentDisplay(entry) {
+    return entry && entry.incidentLabel ? entry.incidentLabel : formatShortDate(entry?.incidentDate);
+  }
+
   function formatDelayLabel(entry) {
     if (entry.status === 'completed') {
       return { text: `Portata ${formatShortDate(entry.completedDate || entry.incidentDate)}`, cls: 'badge-done' };
@@ -443,7 +448,7 @@
                 <div class="row-title">${escapeHtml(player.name)}</div>
                 <div class="row-sub sub-owing">
                   <span class="status-dot status-dot-red"></span>
-                  <span>Da portare · ${escapeHtml(entry.reasonTitle)} (${formatShortDate(entry.incidentDate)})</span>
+                  <span>Da portare · ${escapeHtml(entry.reasonTitle)} (${escapeHtml(formatIncidentDisplay(entry))})</span>
                 </div>
               </div>
             </div>
@@ -526,7 +531,7 @@
         subHtml = `
           <div class="row-sub sub-owing">
             <span class="status-dot status-dot-red"></span>
-            <span>Da portare · ${escapeHtml(nextEntry.reasonTitle)} (${formatShortDate(nextEntry.incidentDate)})</span>
+            <span>Da portare · ${escapeHtml(nextEntry.reasonTitle)} (${escapeHtml(formatIncidentDisplay(nextEntry))})</span>
           </div>
         `;
         rightBadge = `<span class="badge-pill badge-owing-red">${stats.pendingQty} da portare</span>`;
@@ -583,7 +588,7 @@
             ${renderAvatarHtml(p, 'avatar-circle', 'width:32px; height:32px; font-size:0.74rem;')}
             <div class="row-text">
               <div class="row-title">${escapeHtml(p.name)} · ${escapeHtml(entry.reasonTitle)}</div>
-              <div class="row-sub">Quando è successo: ${formatShortDate(entry.incidentDate)}</div>
+              <div class="row-sub">Quando è successo: ${escapeHtml(formatIncidentDisplay(entry))}</div>
             </div>
           </div>
           <div class="row-right">
@@ -744,7 +749,7 @@
             <span class="badge-pill ${delay.cls}">${escapeHtml(delay.text)}</span>
           </div>
           <div class="entry-meta">
-            <span>Quando è successo: ${formatShortDate(entry.incidentDate)}</span>
+            <span>Quando è successo: ${escapeHtml(formatIncidentDisplay(entry))}</span>
           </div>
           <div class="entry-actions">
             ${entry.status === 'pending' ? `
@@ -769,7 +774,8 @@
     'Si è fidanzato',
     'Patente / Auto nuova',
     'Compleanno',
-    'Ritardo in allenamento'
+    'Ritardo in allenamento',
+    'Sono Sandru'
   ];
 
   function openPasteFormSheet({ playerId = '', entryId = '' } = {}) {
@@ -792,13 +798,19 @@
 
     // 3. Incident Date ("Quando è successo")
     const incDate = entry ? (entry.incidentDate || today) : today;
+    const incLabel = entry ? (entry.incidentLabel || '') : '';
     const incInput = document.getElementById('pasteIncidentDateInput');
+    const incLabelInput = document.getElementById('pasteIncidentLabelInput');
     incInput.value = incDate;
+    if (incLabelInput) incLabelInput.value = incLabel;
 
     const tabsWrap = document.getElementById('incidentQuickTabs');
     if (tabsWrap) {
       tabsWrap.querySelectorAll('.inc-tab').forEach(btn => btn.classList.remove('active'));
-      if (incDate === today) {
+      if (incLabel) {
+        tabsWrap.querySelector('[data-offset="sandru"]')?.classList.add('active');
+        incInput.classList.add('hidden');
+      } else if (incDate === today) {
         tabsWrap.querySelector('[data-offset="0"]')?.classList.add('active');
         incInput.classList.add('hidden');
       } else if (incDate === yesterday) {
@@ -2308,14 +2320,20 @@
       openPasteFormSheet({ playerId: pid });
     });
 
-    // Quick Incident Date Tabs ("Oggi" / "Ieri" / "Altra data")
+    // Quick Incident Date Tabs ("Oggi" / "Ieri" / "Altra data" / "Non importa sono sempre Sandru")
     document.querySelectorAll('#incidentQuickTabs .inc-tab').forEach(tab => {
       tab.addEventListener('click', () => {
         const rawOffset = tab.getAttribute('data-offset');
         const incInput = document.getElementById('pasteIncidentDateInput');
+        const incLabelInput = document.getElementById('pasteIncidentLabelInput');
         document.querySelectorAll('#incidentQuickTabs .inc-tab').forEach(b => b.classList.toggle('active', b === tab));
 
-        if (rawOffset === 'custom') {
+        if (rawOffset === 'sandru') {
+          incInput.value = getTodayYMD();
+          incInput.classList.add('hidden');
+          if (incLabelInput) incLabelInput.value = 'Non importa sono sempre Sandru';
+        } else if (rawOffset === 'custom') {
+          if (incLabelInput) incLabelInput.value = '';
           incInput.classList.remove('hidden');
           setTimeout(() => {
             incInput.focus();
@@ -2324,6 +2342,7 @@
             }
           }, 20);
         } else {
+          if (incLabelInput) incLabelInput.value = '';
           const offset = parseInt(rawOffset, 10) || 0;
           incInput.value = addDaysYMD(getTodayYMD(), offset);
           incInput.classList.add('hidden');
@@ -2348,6 +2367,7 @@
       const playerId = document.getElementById('pastePlayerSelect').value;
       const reasonTitle = document.getElementById('pasteReasonTitleInput').value.trim();
       const incidentDate = document.getElementById('pasteIncidentDateInput').value || getTodayYMD();
+      const incidentLabel = document.getElementById('pasteIncidentLabelInput')?.value.trim() || '';
 
       if (!playerId) {
         showToast('Seleziona un giocatore');
@@ -2368,6 +2388,7 @@
         reasonTitle,
         reasonDetails: '',
         incidentDate,
+        incidentLabel,
         dueDate: null,
         status: existingEntry ? existingEntry.status : 'pending',
         saveAsPreset: false

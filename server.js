@@ -598,6 +598,8 @@ function checkAdmin(req, body, db) {
   return Boolean(provided && provided === db.adminCode);
 }
 
+const WRONG_PIN_MSG = '⚠️ PIN errato! Attenzione: se sei Sandru che sta provando a fare l\'accesso di nascosto, il tuo telefono verrà bloccato all\'istante (e porti 2 vassoi di paste).';
+
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -772,7 +774,7 @@ const server = http.createServer(async (req, res) => {
       const body = await parseBody(req);
       const valid = Boolean(body.code && body.code.trim() === db.adminCode);
       if (!valid) {
-        return sendJson(res, 401, { valid: false, error: 'Codice Admin non valido' });
+        return sendJson(res, 401, { valid: false, error: WRONG_PIN_MSG });
       }
       return sendJson(res, 200, { valid: true });
     }
@@ -781,7 +783,7 @@ const server = http.createServer(async (req, res) => {
       const db = await loadDb();
       const body = await parseBody(req);
       if (!checkAdmin(req, body, db)) {
-        return sendJson(res, 401, { error: 'Codice Admin attuale errato' });
+        return sendJson(res, 401, { error: WRONG_PIN_MSG });
       }
       const newCode = (body.newCode || '').trim();
       if (newCode.length < 3) {
@@ -797,7 +799,7 @@ const server = http.createServer(async (req, res) => {
       const db = await loadDb();
       const body = await parseBody(req);
       if (!checkAdmin(req, body, db)) {
-        return sendJson(res, 401, { error: 'Codice Admin richiesto o non valido' });
+        return sendJson(res, 401, { error: WRONG_PIN_MSG });
       }
 
       const {
@@ -807,6 +809,7 @@ const server = http.createServer(async (req, res) => {
         reasonDetails,
         quantity,
         incidentDate,
+        incidentLabel,
         dueDate,
         saveAsPreset
       } = body;
@@ -845,6 +848,7 @@ const server = http.createServer(async (req, res) => {
         reasonDetails: (reasonDetails || '').trim(),
         quantity: Math.max(1, parseInt(quantity, 10) || 1),
         incidentDate,
+        incidentLabel: (incidentLabel || '').trim(),
         dueDate: dueDate ? dueDate : null,
         status: 'pending',
         completedDate: null,
@@ -864,7 +868,7 @@ const server = http.createServer(async (req, res) => {
       const db = await loadDb();
       const body = await parseBody(req);
       if (!checkAdmin(req, body, db)) {
-        return sendJson(res, 401, { error: 'Codice Admin richiesto o non valido' });
+        return sendJson(res, 401, { error: WRONG_PIN_MSG });
       }
       const id = pathname.replace('/api/paste/', '');
       const idx = db.pasteEntries.findIndex(e => e.id === id);
@@ -879,6 +883,7 @@ const server = http.createServer(async (req, res) => {
       if (body.reasonDetails !== undefined) current.reasonDetails = body.reasonDetails.trim();
       if (body.quantity !== undefined) current.quantity = Math.max(1, parseInt(body.quantity, 10) || 1);
       if (body.incidentDate !== undefined) current.incidentDate = body.incidentDate;
+      if (body.incidentLabel !== undefined) current.incidentLabel = String(body.incidentLabel || '').trim();
       if (body.dueDate !== undefined) current.dueDate = body.dueDate;
       if (body.status !== undefined) {
         current.status = body.status;
@@ -903,7 +908,7 @@ const server = http.createServer(async (req, res) => {
       const db = await loadDb();
       const body = await parseBody(req);
       if (!checkAdmin(req, body, db)) {
-        return sendJson(res, 401, { error: 'Codice Admin richiesto o non valido' });
+        return sendJson(res, 401, { error: WRONG_PIN_MSG });
       }
       const id = pathname.replace('/api/paste/', '');
       db.pasteEntries = db.pasteEntries.filter(e => e.id !== id);
@@ -916,7 +921,7 @@ const server = http.createServer(async (req, res) => {
       const db = await loadDb();
       const body = await parseBody(req);
       if (!checkAdmin(req, body, db)) {
-        return sendJson(res, 401, { error: 'Codice Admin richiesto o non valido' });
+        return sendJson(res, 401, { error: WRONG_PIN_MSG });
       }
       const label = (body.label || '').trim();
       const icon = (body.icon || '🥐').trim();
@@ -940,7 +945,7 @@ const server = http.createServer(async (req, res) => {
       const db = await loadDb();
       const body = await parseBody(req);
       if (!checkAdmin(req, body, db)) {
-        return sendJson(res, 401, { error: 'Codice Admin richiesto o non valido' });
+        return sendJson(res, 401, { error: WRONG_PIN_MSG });
       }
       const id = pathname.replace('/api/reasons/', '');
       db.customReasons = db.customReasons.filter(r => r.id !== id);
