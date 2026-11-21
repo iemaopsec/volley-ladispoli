@@ -51,6 +51,7 @@
   </header>
 
   <!-- MAIN SCROLL CONTAINER -->
+  <div id="topScrollSentinel" class="scroll-sentinel" aria-hidden="true"></div>
   <main class="app-shell">
 
     <!-- ==========================================
@@ -91,25 +92,25 @@
       <!-- GROUP 2: ROSA COMPLETA (14 GIOCATORI) -->
       <div class="ios-section">
         <div class="ios-section-header">
-          <h2 class="ios-section-title">Squadra (14)</h2>
+          <h2 class="ios-section-title">Squadra (<span id="squadCountLabel">14</span>)</h2>
           <button id="btnSortToggle" class="text-action-btn" type="button">Ordine: Priorità</button>
         </div>
 
         <!-- SEGMENTED CONTROL + COMPACT SEARCH -->
         <div class="filter-bar">
-          <div class="segmented-control" id="playerFilterControl" role="tablist">
-            <button type="button" class="seg-btn active" data-filter="all">Tutti</button>
-            <button type="button" class="seg-btn" data-filter="owing">In debito</button>
-            <button type="button" class="seg-btn" data-filter="overdue">In ritardo</button>
+          <div class="segmented-control" id="playerFilterControl" role="tablist" aria-label="Filtra squadra">
+            <button type="button" class="seg-btn active" role="tab" aria-selected="true" data-filter="all">Tutti</button>
+            <button type="button" class="seg-btn" role="tab" aria-selected="false" data-filter="owing">In debito</button>
+            <button type="button" class="seg-btn" role="tab" aria-selected="false" data-filter="overdue">In ritardo</button>
           </div>
 
           <div class="search-box">
             <svg class="search-svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="search" id="playerSearchInput" class="search-input" placeholder="Cerca compagno..." />
+            <input type="search" id="playerSearchInput" class="search-input" placeholder="Cerca compagno..." aria-label="Cerca compagno" />
           </div>
         </div>
 
-        <!-- 13 PLAYERS COMPACT IOS LIST -->
+        <!-- 14 PLAYERS COMPACT IOS LIST -->
         <div id="playersList" class="ios-list-group"></div>
       </div>
 
@@ -185,7 +186,7 @@
         </div>
 
         <div class="filter-bar">
-          <div class="segmented-control" id="matchFilterControl">
+          <div class="segmented-control segmented-scroll" id="matchFilterControl">
             <button type="button" class="seg-btn active" data-matchfilter="upcoming">Prossime</button>
             <button type="button" class="seg-btn" data-matchfilter="played">Risultati</button>
             <button type="button" class="seg-btn" data-matchfilter="home">Casa</button>
@@ -245,10 +246,10 @@
          ========================================== -->
     <section id="view-media" class="view-panel" role="tabpanel">
       <div class="filter-bar" style="margin-bottom: 0.9rem;">
-        <div class="segmented-control" id="mediaTabControl" role="tablist">
-          <button type="button" class="seg-btn active" data-mediatab="funny">Divertenti</button>
-          <button type="button" class="seg-btn" data-mediatab="match">Partite</button>
-          <button type="button" class="seg-btn" data-mediatab="socks">Calzini 🧦</button>
+        <div class="segmented-control" id="mediaTabControl" role="tablist" aria-label="Sezioni Media">
+          <button type="button" class="seg-btn active" role="tab" aria-selected="true" data-mediatab="funny">Divertenti</button>
+          <button type="button" class="seg-btn" role="tab" aria-selected="false" data-mediatab="match">Partite</button>
+          <button type="button" class="seg-btn" role="tab" aria-selected="false" data-mediatab="socks">Calzini 🧦</button>
         </div>
       </div>
 
@@ -349,7 +350,11 @@
           + Segna paste per questo giocatore
         </button>
 
+        <div id="sheetSandruBanner" class="sandru-callout-card hidden"></div>
+
         <div id="sheetPlayerEntries" class="sheet-entries-list"></div>
+
+        <div id="sheetSandruProofsWrap" class="sandru-proofs-section hidden"></div>
       </div>
     </div>
   </div>
@@ -453,9 +458,25 @@
           <div class="field-block">
             <label for="adminCodeModalInput" class="field-label">Codice Admin</label>
             <input type="password" id="adminCodeModalInput" class="field-input" inputmode="numeric" placeholder="Inserisci codice Admin" required autocomplete="off" />
+            <p id="adminUnlockError" class="sandru-form-alert hidden" style="margin-top:0.55rem; margin-bottom:0;" role="alert"></p>
           </div>
           <button type="submit" class="btn-primary-full">Conferma Codice Admin</button>
         </form>
+
+        <!-- SANDRU SELF-CLEAR OPTION (SHOWN ONLY FOR SANDRU'S PASTES) -->
+        <div id="adminSandruOptionBox" class="sandru-admin-alt hidden">
+          <div class="sandru-divider"><span>oppure</span></div>
+          <button type="button" id="btnAdminIamSandru" class="sandru-trigger-btn">
+            <span class="sandru-trigger-icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2"/><circle cx="9" cy="12" r="2"/><path d="M15 10h3"/><path d="M15 14h3"/></svg>
+            </span>
+            <span class="sandru-trigger-copy">
+              <strong>Sei Sandru?</strong>
+              <span>Carica le 2 foto JPEG (con documento in mano + scontrino) per eliminare la pasta</span>
+            </span>
+            <svg class="sandru-trigger-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+        </div>
 
         <!-- ADMIN SETTINGS WHEN UNLOCKED -->
         <div id="adminUnlockedPanel" class="hidden">
@@ -556,7 +577,7 @@
           <label class="field-label">Sezione</label>
           <div class="segmented-control" id="videoCategoryTabs">
             <button type="button" class="seg-btn active" data-vcat="funny">Divertenti</button>
-            <button type="button" class="seg-btn" data-vcat="match">Partite / Allenamenti</button>
+            <button type="button" class="seg-btn" data-vcat="match">Partite</button>
           </div>
           <input type="hidden" id="videoCategoryInput" value="funny" />
         </div>
@@ -564,8 +585,8 @@
         <div class="field-block">
           <label class="field-label">Origine Video</label>
           <div class="segmented-control" id="videoSourceTabs">
-            <button type="button" class="seg-btn active" data-vsrc="link">Link (Drive / YouTube / Reels)</button>
-            <button type="button" class="seg-btn" data-vsrc="file">Carica File MP4 / MOV</button>
+            <button type="button" class="seg-btn active" data-vsrc="link">Link esterno</button>
+            <button type="button" class="seg-btn" data-vsrc="file">File MP4 / MOV</button>
           </div>
         </div>
 
@@ -662,11 +683,102 @@
   <!-- ==========================================
        SHEET 8: IMAGE LIGHTBOX
        ========================================== -->
-  <div id="sheetImageLightbox" class="sheet-backdrop lightbox-backdrop hidden" role="dialog" aria-modal="true" aria-label="Foto calzini ingrandita">
+  <div id="sheetImageLightbox" class="sheet-backdrop lightbox-backdrop hidden" role="dialog" aria-modal="true" aria-label="Anteprima foto ingrandita">
     <div class="lightbox-card">
       <button type="button" class="lightbox-close-btn" data-close="sheetImageLightbox" aria-label="Chiudi">✕</button>
       <img id="lightboxImg" src="" alt="" class="lightbox-img" />
       <p id="lightboxCaption" class="lightbox-caption"></p>
+    </div>
+  </div>
+
+  <!-- ==========================================
+       SHEET 9: SANDRU JPEG VERIFICATION SHEET
+       ========================================== -->
+  <div id="sheetSandruVerify" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheetSandruVerifyTitle">
+    <div class="bottom-sheet" data-sheet="sheetSandruVerify">
+      <div class="sheet-grabber-area"><div class="sheet-grabber"></div></div>
+      <div class="sheet-header">
+        <div>
+          <span class="sheet-eyebrow">Verifica Sandru · Solo JPEG</span>
+          <h3 id="sheetSandruVerifyTitle" class="sheet-title">Elimina la tua pasta</h3>
+          <p class="sheet-subtitle">Carica entrambe le foto in formato .jpg / .jpeg per procedere</p>
+        </div>
+        <button type="button" class="sheet-close-btn" data-close="sheetSandruVerify" aria-label="Chiudi">✕</button>
+      </div>
+
+      <form id="formSandruVerify" class="sheet-body" novalidate>
+        <input type="hidden" id="sandruVerifyEntryId" value="" />
+
+        <!-- TARGET PASTE SUMMARY / SELECTOR -->
+        <div id="sandruTargetEntryBox" class="sandru-target-card"></div>
+
+        <!-- LIVE 2-STEP CHECKLIST -->
+        <div class="sandru-steps-bar" aria-live="polite">
+          <div id="sandruStepDoc" class="sandru-step-pill">
+            <span class="sandru-step-dot">1</span>
+            <span>Documento JPEG</span>
+          </div>
+          <div id="sandruStepReceipt" class="sandru-step-pill">
+            <span class="sandru-step-dot">2</span>
+            <span>Scontrino JPEG</span>
+          </div>
+        </div>
+
+        <!-- SLOT 1: SANDRU HOLDING ID DOCUMENT (JPEG ONLY) -->
+        <div class="field-block">
+          <label for="sandruDocPhotoInput" class="field-label">1. Foto con il documento in mano (.jpeg)</label>
+          <label for="sandruDocPhotoInput" id="sandruDocDropzone" class="upload-dropzone sandru-dropzone">
+            <span class="sandru-dz-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2"/><circle cx="9" cy="12" r="2"/><path d="M15 10h3"/><path d="M15 14h3"/></svg>
+            </span>
+            <span id="sandruDocDropLabel" class="sandru-dz-title">Carica o scatta la foto con il documento</span>
+            <span class="sandru-dz-format">Solo formato JPEG (.jpg / .jpeg)</span>
+            <input type="file" id="sandruDocPhotoInput" accept=".jpg,.jpeg,image/jpeg" class="hidden-file-input" />
+          </label>
+          <div id="sandruDocPreviewWrap" class="sandru-preview-card hidden">
+            <button type="button" id="sandruDocPreviewBtn" class="sandru-preview-thumb-btn" aria-label="Ingrandisci foto documento">
+              <img id="sandruDocPreviewImg" src="" alt="Anteprima foto documento Sandru" class="sandru-preview-img" />
+            </button>
+            <div class="sandru-preview-info">
+              <span class="sandru-verified-chip">✓ JPEG valido</span>
+              <span id="sandruDocFileMeta" class="sandru-file-meta"></span>
+            </div>
+            <button type="button" id="btnRemoveSandruDoc" class="btn-small-secondary">Cambia</button>
+          </div>
+          <p id="sandruDocError" class="field-error-text hidden" role="alert"></p>
+        </div>
+
+        <!-- SLOT 2: PASTRY RECEIPT (JPEG ONLY) -->
+        <div class="field-block">
+          <label for="sandruReceiptPhotoInput" class="field-label">2. Foto scontrino delle paste (.jpeg)</label>
+          <label for="sandruReceiptPhotoInput" id="sandruReceiptDropzone" class="upload-dropzone sandru-dropzone">
+            <span class="sandru-dz-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 7h8"/><path d="M8 11h8"/><path d="M8 15h5"/></svg>
+            </span>
+            <span id="sandruReceiptDropLabel" class="sandru-dz-title">Carica o scatta la foto dello scontrino</span>
+            <span class="sandru-dz-format">Solo formato JPEG (.jpg / .jpeg)</span>
+            <input type="file" id="sandruReceiptPhotoInput" accept=".jpg,.jpeg,image/jpeg" class="hidden-file-input" />
+          </label>
+          <div id="sandruReceiptPreviewWrap" class="sandru-preview-card hidden">
+            <button type="button" id="sandruReceiptPreviewBtn" class="sandru-preview-thumb-btn" aria-label="Ingrandisci foto scontrino">
+              <img id="sandruReceiptPreviewImg" src="" alt="Anteprima foto scontrino paste" class="sandru-preview-img" />
+            </button>
+            <div class="sandru-preview-info">
+              <span class="sandru-verified-chip">✓ JPEG valido</span>
+              <span id="sandruReceiptFileMeta" class="sandru-file-meta"></span>
+            </div>
+            <button type="button" id="btnRemoveSandruReceipt" class="btn-small-secondary">Cambia</button>
+          </div>
+          <p id="sandruReceiptError" class="field-error-text hidden" role="alert"></p>
+        </div>
+
+        <p id="sandruFormError" class="sandru-form-alert hidden" role="alert"></p>
+
+        <div class="sheet-footer-actions" style="margin-top: 0.9rem;">
+          <button type="button" class="btn-secondary-half" data-close="sheetSandruVerify">Annulla</button>
+          <button type="submit" id="btnSubmitSandruVerify" class="btn-primary-half" disabled>Elimina pasta</button>
+        </div>
+      </form>
     </div>
   </div>
 

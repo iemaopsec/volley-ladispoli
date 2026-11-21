@@ -76,6 +76,7 @@
     players: [...DEFAULT_PLAYERS],
     customReasons: [...DEFAULT_REASONS],
     pasteEntries: [],
+    sandruProofs: [],
     videos: [],
     socks: [],
     currentUser: null,
@@ -92,7 +93,16 @@
     playerSearch: '',
     activePlayerSheetId: null,
     pendingAdminCallback: null,
+    pendingAdminSandruEntryId: null,
     pendingLoginCallback: null,
+    sandruVerify: {
+      entryId: '',
+      docDataUrl: '',
+      docFileName: '',
+      receiptDataUrl: '',
+      receiptFileName: '',
+      serverError: ''
+    },
     // Media & Socks
     mediaTab: 'funny', // 'funny' | 'match' | 'socks'
     sockSort: 'top',   // 'top' | 'recent'
@@ -178,34 +188,76 @@
       .replace(/'/g, '&#39;');
   }
 
-  function showToast(msg) {
+  function showToast(msg, variant = 'default') {
     const container = document.getElementById('toastContainer');
     if (!container) return;
+    const text = String(msg || '');
+    let tone = variant;
+    if (tone === 'default') {
+      if (text.includes('⚠️') || /errat|non valid|non riuscit|manca|furbacchione|formato/i.test(text)) {
+        tone = 'error';
+      } else if (/verificat|eliminat|salvat|portat|pubblicat|aggiornat|scaricat|benvenuto|caricat|attiva/i.test(text)) {
+        tone = 'success';
+      }
+    }
+
     const el = document.createElement('div');
-    el.className = 'toast-item';
-    el.textContent = msg;
-    container.appendChild(el);
-    const duration = String(msg || '').length > 55 ? 4500 : 2600;
-    setTimeout(() => {
-      el.style.opacity = '0';
-      el.style.transform = 'translateY(-6px)';
+    el.className = `toast-item toast-${tone}`;
+    el.setAttribute('role', 'status');
+    el.textContent = text;
+
+    let dismissed = false;
+    const dismiss = () => {
+      if (dismissed) return;
+      dismissed = true;
+      el.classList.add('is-leaving');
       setTimeout(() => el.remove(), 220);
-    }, duration);
+    };
+    el.addEventListener('click', dismiss);
+
+    // Clear stale error toasts on success, and keep mobile stack compact (max 2)
+    if (tone === 'success') {
+      container.querySelectorAll('.toast-error').forEach(old => old.remove());
+    }
+    while (container.children.length >= 2) {
+      container.firstElementChild?.remove();
+    }
+    container.appendChild(el);
+    const duration = text.length > 55 ? 4600 : 2800;
+    setTimeout(dismiss, duration);
   }
 
   // ==========================================
   // API & LOCAL STORAGE FALLBACK
   // ==========================================
   function saveLocalBackup() {
+    const payload = {
+      players: state.players,
+      customReasons: state.customReasons,
+      pasteEntries: state.pasteEntries,
+      sandruProofs: state.sandruProofs,
+      videos: state.videos,
+      socks: state.socks
+    };
     try {
-      localStorage.setItem(STORAGE_KEYS.LOCAL_DB, JSON.stringify({
-        players: state.players,
-        customReasons: state.customReasons,
-        pasteEntries: state.pasteEntries,
-        videos: state.videos,
-        socks: state.socks
-      }));
-    } catch (_) {}
+      localStorage.setItem(STORAGE_KEYS.LOCAL_DB, JSON.stringify(payload));
+    } catch (_) {
+      // Fallback without heavy inline base64 images so core paste backup never fails quota
+      try {
+        payload.sandruProofs = (state.sandruProofs || []).map(p => ({
+          id: p.id,
+          entryId: p.entryId,
+          playerId: p.playerId,
+          reasonTitle: p.reasonTitle,
+          incidentDate: p.incidentDate,
+          incidentLabel: p.incidentLabel,
+          docPhotoUrl: String(p.docPhotoUrl || '').startsWith('data:') ? '' : p.docPhotoUrl,
+          receiptPhotoUrl: String(p.receiptPhotoUrl || '').startsWith('data:') ? '' : p.receiptPhotoUrl,
+          clearedAt: p.clearedAt
+        }));
+        localStorage.setItem(STORAGE_KEYS.LOCAL_DB, JSON.stringify(payload));
+      } catch (__) {}
+    }
   }
 
   function loadLocalBackup() {
@@ -246,6 +298,7 @@
       state.players = data.players || DEFAULT_PLAYERS;
       state.customReasons = data.customReasons || DEFAULT_REASONS;
       state.pasteEntries = data.pasteEntries || [];
+      state.sandruProofs = data.sandruProofs || [];
       state.videos = data.videos || [];
       state.socks = data.socks || [];
       state.currentUser = data.currentUser || null;
@@ -256,6 +309,7 @@
         state.players = backup.players || DEFAULT_PLAYERS;
         state.customReasons = backup.customReasons || DEFAULT_REASONS;
         state.pasteEntries = backup.pasteEntries || [];
+        state.sandruProofs = backup.sandruProofs || [];
         state.videos = backup.videos || [];
         state.socks = backup.socks || [];
       }
@@ -441,22 +495,27 @@
       activeList.innerHTML = activeDebtsFlat.map(({ player, entry }) => {
         const delay = formatDelayLabel(entry);
         return `
-          <div class="list-row" data-action="open-player" data-player-id="${player.id}">
-            <div class="row-left">
-              ${renderAvatarHtml(player, 'avatar-circle')}
-              <div class="row-text">
-                <div class="row-title">${escapeHtml(player.name)}</div>
-                <div class="row-sub sub-owing">
-                  <span class="status-dot status-dot-red"></span>
-                  <span>Da portare · ${escapeHtml(entry.reasonTitle)} (${escapeHtml(formatIncidentDisplay(entry))})</span>
+          <div class="list-row debt-row" data-action="open-player" data-player-id="${player.id}">
+            <div class="debt-row-top">
+              <div class="row-left">
+                ${renderAvatarHtml(player, 'avatar-circle')}
+                <div class="row-text">
+                  <div class="row-title">${escapeHtml(player.name)}</div>
+                  <div class="row-sub sub-owing">
+                    <span class="status-dot status-dot-red"></span>
+                    <span>${escapeHtml(entry.reasonTitle)}</span>
+                  </div>
                 </div>
               </div>
+              <div class="row-right">
+                <button type="button" class="quick-check-btn" data-action="quick-complete" data-entry-id="${entry.id}" title="Segna come portata">
+                  Portata
+                </button>
+              </div>
             </div>
-            <div class="row-right">
+            <div class="debt-row-meta">
               <span class="badge-pill ${delay.cls}">${escapeHtml(delay.text)}</span>
-              <button type="button" class="quick-check-btn" data-action="quick-complete" data-entry-id="${entry.id}" title="Segna come portata">
-                Portata
-              </button>
+              <span class="debt-date-meta">${escapeHtml(formatIncidentDisplay(entry))}</span>
             </div>
           </div>
         `;
@@ -466,7 +525,9 @@
       activeList.innerHTML = '';
     }
 
-    // 3. Group 2: Compact 13 Players List
+    // 3. Group 2: Compact 14 Players List
+    const squadCountEl = document.getElementById('squadCountLabel');
+    if (squadCountEl) squadCountEl.textContent = String(state.players.length);
     renderCompactPlayersList();
 
     // 4. Archive Log
@@ -570,7 +631,21 @@
     const container = document.getElementById('historyLogContainer');
     if (!container) return;
 
-    if (state.pasteEntries.length === 0) {
+    const sandruProofs = Array.isArray(state.sandruProofs) ? state.sandruProofs : [];
+    const combined = [
+      ...state.pasteEntries.map(entry => ({
+        kind: 'entry',
+        sortAt: entry.completedDate || entry.createdAt || entry.incidentDate || '',
+        entry
+      })),
+      ...sandruProofs.map(proof => ({
+        kind: 'sandru-proof',
+        sortAt: proof.clearedAt || proof.incidentDate || '',
+        proof
+      }))
+    ].sort((a, b) => String(b.sortAt).localeCompare(String(a.sortAt)));
+
+    if (combined.length === 0) {
       container.innerHTML = `
         <div style="padding: 1.25rem; text-align: center; color: var(--text-tertiary); font-size: 0.82rem;">
           Lo storico delle paste è vuoto.
@@ -579,8 +654,29 @@
       return;
     }
 
-    container.innerHTML = state.pasteEntries.map(entry => {
-      const p = playerMap.get(entry.playerId) || { name: entry.playerId, avatarColor: '#515158' };
+    container.innerHTML = combined.map(item => {
+      if (item.kind === 'sandru-proof') {
+        const pr = item.proof;
+        const sandruPlayer = playerMap.get('sandru') || { id: 'sandru', name: 'Sandru', avatarColor: '#ea580c' };
+        return `
+          <div class="list-row history-proof-row" data-action="open-player" data-player-id="sandru">
+            <div class="row-left">
+              ${renderAvatarHtml(sandruPlayer, 'avatar-circle', 'width:32px; height:32px; font-size:0.74rem;')}
+              <div class="row-text">
+                <div class="row-title">Sandru · ${escapeHtml(pr.reasonTitle)}</div>
+                <div class="row-sub">Eliminata con 2 foto JPEG · ${escapeHtml(formatShortDate((pr.clearedAt || '').slice(0, 10)))}</div>
+              </div>
+            </div>
+            <div class="row-right">
+              <button type="button" class="proof-mini-btn" data-action="open-lightbox" data-img-url="${escapeHtml(pr.docPhotoUrl)}" data-caption="Sandru con documento in mano (${escapeHtml(pr.reasonTitle)})">Doc</button>
+              <button type="button" class="proof-mini-btn" data-action="open-lightbox" data-img-url="${escapeHtml(pr.receiptPhotoUrl)}" data-caption="Scontrino paste di Sandru (${escapeHtml(pr.reasonTitle)})">Scontrino</button>
+            </div>
+          </div>
+        `;
+      }
+
+      const entry = item.entry;
+      const p = playerMap.get(entry.playerId) || { id: entry.playerId, name: entry.playerId, avatarColor: '#515158' };
       const delay = formatDelayLabel(entry);
       return `
         <div class="list-row" data-action="open-player" data-player-id="${p.id}">
@@ -602,73 +698,200 @@
   // ==========================================
   // BOTTOM SHEETS MANAGEMENT & DRAG GESTURE
   // ==========================================
+  const sheetCloseTimers = new Map();
+
+  function syncStackedSheetDepth() {
+    const openSheets = Array.from(document.querySelectorAll('.sheet-backdrop.is-open'));
+    openSheets.sort((a, b) => {
+      const za = parseInt(window.getComputedStyle(a).zIndex, 10) || 100;
+      const zb = parseInt(window.getComputedStyle(b).zIndex, 10) || 100;
+      return za - zb;
+    });
+    const topBackdrop = openSheets[openSheets.length - 1] || null;
+    document.querySelectorAll('.sheet-backdrop').forEach(el => {
+      const isReceded = el.classList.contains('is-open') && el !== topBackdrop;
+      el.classList.toggle('is-receded', isReceded);
+    });
+  }
+
+  function syncBodyScrollLock() {
+    const anyOpen = Boolean(document.querySelector('.sheet-backdrop.is-open'));
+    document.body.classList.toggle('sheet-open', anyOpen);
+    syncStackedSheetDepth();
+  }
+
   function openSheet(sheetId) {
     const backdrop = document.getElementById(sheetId);
     if (!backdrop) return;
+    if (sheetCloseTimers.has(sheetId)) {
+      clearTimeout(sheetCloseTimers.get(sheetId));
+      sheetCloseTimers.delete(sheetId);
+    }
     const sheet = backdrop.querySelector('.bottom-sheet');
     if (sheet) {
+      sheet.style.transition = '';
       sheet.style.transform = '';
     }
-    backdrop.classList.remove('hidden');
+    backdrop.style.background = '';
+    backdrop.classList.remove('hidden', 'is-closing', 'is-receded');
+    // Force initial layout commit before adding .is-open so CSS enter transition never skips
+    void backdrop.offsetWidth;
+    requestAnimationFrame(() => {
+      backdrop.classList.add('is-open');
+      syncBodyScrollLock();
+    });
   }
 
   function closeSheet(sheetId) {
     const backdrop = document.getElementById(sheetId);
-    if (!backdrop) return;
-    backdrop.classList.add('hidden');
+    if (!backdrop || backdrop.classList.contains('hidden')) return;
+    if (sheetCloseTimers.has(sheetId)) {
+      clearTimeout(sheetCloseTimers.get(sheetId));
+      sheetCloseTimers.delete(sheetId);
+    }
+
+    backdrop.classList.remove('is-open', 'is-receded');
+    backdrop.classList.add('is-closing');
+    syncBodyScrollLock();
+
     if (sheetId === 'sheetPlayer') {
       state.activePlayerSheetId = null;
     }
+    if (sheetId === 'sheetAdmin') {
+      state.pendingAdminSandruEntryId = null;
+    }
+
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const waitMs = prefersReduced ? 130 : 210;
+    const timer = setTimeout(() => {
+      backdrop.classList.add('hidden');
+      backdrop.classList.remove('is-closing');
+      backdrop.style.background = '';
+      const sheet = backdrop.querySelector('.bottom-sheet');
+      if (sheet) {
+        sheet.style.transition = '';
+        sheet.style.transform = '';
+      }
+      sheetCloseTimers.delete(sheetId);
+      syncBodyScrollLock();
+    }, waitMs);
+    sheetCloseTimers.set(sheetId, timer);
   }
 
-  // Apple Fluid Interfaces + Emil Kowalski velocity-aware drag-to-dismiss
+  function closeTopmostSheet() {
+    const openSheets = Array.from(document.querySelectorAll('.sheet-backdrop.is-open'));
+    if (openSheets.length === 0) return;
+    openSheets.sort((a, b) => {
+      const za = parseInt(window.getComputedStyle(a).zIndex, 10) || 100;
+      const zb = parseInt(window.getComputedStyle(b).zIndex, 10) || 100;
+      return za - zb;
+    });
+    const top = openSheets[openSheets.length - 1];
+    closeSheet(top.id);
+  }
+
+  // Apple Fluid Interfaces (WWDC 2018) + Emil Kowalski velocity-aware drag-to-dismiss
   function attachSheetDragPhysics() {
+    const projectMomentum = (vPxPerSec, decelerationRate = 0.992) => {
+      return (vPxPerSec / 1000) * decelerationRate / (1 - decelerationRate);
+    };
+
     document.querySelectorAll('.bottom-sheet').forEach(sheet => {
       const grabberArea = sheet.querySelector('.sheet-grabber-area');
       const headerArea = sheet.querySelector('.sheet-header');
       const backdrop = sheet.closest('.sheet-backdrop');
       if (!grabberArea || !backdrop) return;
 
-      let isDragging = false;
+      let activePointerId = null;
       let startY = 0;
       let currentY = 0;
-      let startTime = 0;
+      let hasCommittedDrag = false;
+      let samples = [];
+      let snapClearTimer = null;
 
       const onPointerDown = (e) => {
-        if (e.target.closest('button, input, select, a')) return;
-        isDragging = true;
+        if (window.innerWidth >= 700) return; // Desktop renders centered modal
+        if (activePointerId !== null) return; // Multi-touch guard
+        if (e.target.closest('button, input, select, a, label')) return;
+        if (snapClearTimer) {
+          clearTimeout(snapClearTimer);
+          snapClearTimer = null;
+        }
+        activePointerId = e.pointerId;
         startY = e.clientY;
         currentY = 0;
-        startTime = performance.now();
-        sheet.style.transition = 'none';
-        e.currentTarget.setPointerCapture(e.pointerId);
+        hasCommittedDrag = false;
+        samples = [{ y: 0, t: performance.now() }];
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch (_) {}
       };
 
       const onPointerMove = (e) => {
-        if (!isDragging) return;
+        if (activePointerId !== e.pointerId) return;
         const rawDelta = e.clientY - startY;
+        if (!hasCommittedDrag) {
+          // ~8px hysteresis prevents accidental drag/dismiss on taps
+          if (Math.abs(rawDelta) < 8) return;
+          hasCommittedDrag = true;
+          sheet.style.transition = 'none';
+        }
         if (rawDelta < 0) {
-          // Progressive rubber-banding when pulling upward past top boundary
+          // Progressive rubber-banding past top edge
           const overshoot = Math.abs(rawDelta);
           currentY = -((overshoot * 120 * 0.35) / (120 + 0.35 * overshoot));
         } else {
           currentY = rawDelta;
         }
+        const now = performance.now();
+        samples.push({ y: currentY, t: now });
+        // Keep only samples within the last 110ms for accurate release velocity
+        while (samples.length > 2 && now - samples[0].t > 110) {
+          samples.shift();
+        }
         sheet.style.transform = `translateY(${currentY}px)`;
+        // Continuous scrim opacity feedback during drag (reset cleanly if pulled back up)
+        if (currentY > 0) {
+          const progress = Math.min(1, currentY / 320);
+          backdrop.style.background = `rgba(17, 17, 24, ${(0.38 * (1 - progress * 0.72)).toFixed(3)})`;
+        } else {
+          backdrop.style.background = '';
+        }
       };
 
-      const onPointerUp = () => {
-        if (!isDragging) return;
-        isDragging = false;
-        const elapsed = Math.max(1, performance.now() - startTime);
-        const velocity = currentY / elapsed; // px/ms
+      const onPointerUp = (e) => {
+        if (activePointerId !== e.pointerId) return;
+        const pointerId = activePointerId;
+        activePointerId = null;
+        try {
+          if (e.currentTarget.hasPointerCapture?.(pointerId)) {
+            e.currentTarget.releasePointerCapture(pointerId);
+          }
+        } catch (_) {}
 
-        sheet.style.transition = 'transform 260ms var(--ease-drawer)';
-        if (currentY > 110 || velocity > 0.35) {
+        if (!hasCommittedDrag) return;
+        hasCommittedDrag = false;
+
+        const first = samples[0] || { y: 0, t: performance.now() };
+        const last = samples[samples.length - 1] || first;
+        const dt = Math.max(16, last.t - first.t);
+        const velocityPxPerMs = (last.y - first.y) / dt;
+        const projectedY = currentY + projectMomentum(velocityPxPerMs * 1000, 0.992);
+
+        const shouldDismiss = currentY > 115 || (currentY > 28 && (velocityPxPerMs > 0.55 || projectedY > 210));
+        if (shouldDismiss) {
+          sheet.style.transition = 'transform 210ms var(--ease-drawer)';
           sheet.style.transform = 'translateY(100%)';
-          setTimeout(() => closeSheet(backdrop.id), 220);
+          closeSheet(backdrop.id);
         } else {
-          sheet.style.transform = 'translateY(0)';
+          // Clear inline transform so .is-open CSS value takes over smoothly and never blocks future closeSheet()
+          sheet.style.transition = 'transform 280ms var(--ease-drawer)';
+          sheet.style.transform = '';
+          backdrop.style.background = '';
+          snapClearTimer = setTimeout(() => {
+            sheet.style.transition = '';
+            snapClearTimer = null;
+          }, 290);
         }
       };
 
@@ -730,6 +953,30 @@
       </div>
     `;
 
+    const isSandru = player.id === 'sandru';
+    const sandruBanner = document.getElementById('sheetSandruBanner');
+    const sandruProofsWrap = document.getElementById('sheetSandruProofsWrap');
+
+    // Dedicated "Sei Sandru?" banner (shown ONLY for Sandru when he has pending pastes)
+    if (sandruBanner) {
+      if (isSandru && stats.pendingEntries.length > 0) {
+        const defaultEntry = stats.pendingEntries[0];
+        sandruBanner.classList.remove('hidden');
+        sandruBanner.innerHTML = `
+          <div class="sandru-callout-copy">
+            <strong>Hai portato le paste?</strong>
+            <span>Se sei Sandru puoi eliminare una pasta caricando 2 foto in JPEG: tu con il documento in mano e lo scontrino.</span>
+          </div>
+          <button type="button" class="sandru-callout-btn" data-action="sandru-self-clear" data-entry-id="${defaultEntry.id}">
+            Sei Sandru?
+          </button>
+        `;
+      } else {
+        sandruBanner.classList.add('hidden');
+        sandruBanner.innerHTML = '';
+      }
+    }
+
     const entriesContainer = document.getElementById('sheetPlayerEntries');
     if (stats.entries.length === 0) {
       entriesContainer.innerHTML = `
@@ -737,32 +984,285 @@
           Nessuna pasta registrata per ${escapeHtml(player.name)}.
         </div>
       `;
+    } else {
+      entriesContainer.innerHTML = stats.entries.map(entry => {
+        const delay = formatDelayLabel(entry);
+        return `
+          <div class="entry-card">
+            <div class="entry-card-top">
+              <div class="entry-title">${escapeHtml(entry.reasonTitle)}</div>
+              <span class="badge-pill ${delay.cls}">${escapeHtml(delay.text)}</span>
+            </div>
+            <div class="entry-meta">
+              <span>Quando è successo: ${escapeHtml(formatIncidentDisplay(entry))}</span>
+            </div>
+            <div class="entry-actions">
+              ${entry.status === 'pending' ? `
+                <button type="button" class="btn-small-primary" data-action="quick-complete" data-entry-id="${entry.id}">Segna Portata</button>
+              ` : `
+                <button type="button" class="btn-small-secondary" data-action="reopen-entry" data-entry-id="${entry.id}">Riapri</button>
+              `}
+              <button type="button" class="btn-small-secondary" data-action="edit-entry" data-entry-id="${entry.id}">Modifica</button>
+              <button type="button" class="btn-small-secondary btn-delete-entry" data-action="delete-entry" data-entry-id="${entry.id}">Elimina</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Archived Sandru JPEG proofs (shown ONLY on Sandru's sheet)
+    if (sandruProofsWrap) {
+      const proofs = isSandru ? (state.sandruProofs || []) : [];
+      if (proofs.length > 0) {
+        sandruProofsWrap.classList.remove('hidden');
+        sandruProofsWrap.innerHTML = `
+          <div class="sandru-proofs-heading">
+            <span>Prove JPEG inviate da Sandru (${proofs.length})</span>
+          </div>
+          <div class="sandru-proofs-list">
+            ${proofs.map(pr => `
+              <div class="sandru-proof-card">
+                <div class="sandru-proof-top">
+                  <div>
+                    <div class="sandru-proof-title">${escapeHtml(pr.reasonTitle)}</div>
+                    <div class="sandru-proof-meta">Eliminata il ${escapeHtml(formatShortDate((pr.clearedAt || '').slice(0, 10)))}</div>
+                  </div>
+                  ${state.isAdmin ? `<button type="button" class="text-action-btn" style="color:var(--accent-red); font-size:0.74rem;" data-action="delete-sandru-proof" data-proof-id="${pr.id}">Elimina</button>` : '<span class="badge-pill badge-done">Verificata</span>'}
+                </div>
+                <div class="sandru-proof-thumbs">
+                  <button type="button" class="sandru-thumb-tile" data-action="open-lightbox" data-img-url="${escapeHtml(pr.docPhotoUrl)}" data-caption="Sandru con documento in mano (${escapeHtml(pr.reasonTitle)})">
+                    <img src="${escapeHtml(pr.docPhotoUrl)}" alt="Sandru con documento in mano" loading="lazy" />
+                    <span>Documento JPEG</span>
+                  </button>
+                  <button type="button" class="sandru-thumb-tile" data-action="open-lightbox" data-img-url="${escapeHtml(pr.receiptPhotoUrl)}" data-caption="Scontrino paste di Sandru (${escapeHtml(pr.reasonTitle)})">
+                    <img src="${escapeHtml(pr.receiptPhotoUrl)}" alt="Scontrino paste di Sandru" loading="lazy" />
+                    <span>Scontrino JPEG</span>
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      } else {
+        sandruProofsWrap.classList.add('hidden');
+        sandruProofsWrap.innerHTML = '';
+      }
+    }
+  }
+
+  // ==========================================
+  // SANDRU JPEG VERIFICATION FLOW ("Sei Sandru?")
+  // ==========================================
+  async function validateClientJpegFile(file) {
+    if (!file) {
+      return { ok: false, error: 'Seleziona una foto in formato JPEG (.jpg o .jpeg).' };
+    }
+    if (file.size < 100) {
+      return { ok: false, error: 'File JPEG troppo piccolo o danneggiato.' };
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      return { ok: false, error: 'Foto troppo grande (massimo 15 MB).' };
+    }
+    const fileName = String(file.name || '').trim();
+    const hasAnyExt = /\.[a-z0-9]+$/i.test(fileName);
+    const hasJpegExt = /\.jpe?g$/i.test(fileName);
+    const mime = String(file.type || '').toLowerCase();
+    const hasValidMime = !mime || mime === 'image/jpeg' || mime === 'image/jpg';
+    // Allow extensionless mobile camera captures ONLY if MIME is explicitly image/jpeg (magic bytes still verified below)
+    const extAndMimeOk = hasAnyExt
+      ? (hasJpegExt && hasValidMime)
+      : (mime === 'image/jpeg' || mime === 'image/jpg');
+    if (!extAndMimeOk) {
+      return { ok: false, error: 'Solo formato JPEG accettato (.jpg o .jpeg). PNG, WEBP o altri file non sono validi.' };
+    }
+    try {
+      const headerBuf = await file.slice(0, 4).arrayBuffer();
+      const bytes = new Uint8Array(headerBuf);
+      const isJpegMagic = bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF;
+      if (!isJpegMagic) {
+        return { ok: false, error: 'Il file scelto non è una vera immagine JPEG (.jpg / .jpeg).' };
+      }
+    } catch (_) {
+      return { ok: false, error: 'Impossibile verificare il file JPEG selezionato.' };
+    }
+    return { ok: true };
+  }
+
+  function updateSandruVerifyUi() {
+    const hasDoc = Boolean(state.sandruVerify.docDataUrl);
+    const hasReceipt = Boolean(state.sandruVerify.receiptDataUrl);
+    const isDuplicate = hasDoc && hasReceipt && state.sandruVerify.docDataUrl === state.sandruVerify.receiptDataUrl;
+
+    const stepDoc = document.getElementById('sandruStepDoc');
+    const stepReceipt = document.getElementById('sandruStepReceipt');
+    const formError = document.getElementById('sandruFormError');
+    const submitBtn = document.getElementById('btnSubmitSandruVerify');
+
+    if (stepDoc) {
+      stepDoc.classList.toggle('is-done', hasDoc);
+      stepDoc.querySelector('.sandru-step-dot').textContent = hasDoc ? '✓' : '1';
+    }
+    if (stepReceipt) {
+      stepReceipt.classList.toggle('is-done', hasReceipt);
+      stepReceipt.querySelector('.sandru-step-dot').textContent = hasReceipt ? '✓' : '2';
+    }
+
+    if (formError) {
+      if (isDuplicate) {
+        formError.textContent = 'Hai caricato la stessa identica foto due volte! Carica sia la foto con il documento in mano sia lo scontrino delle paste.';
+        formError.classList.remove('hidden');
+      } else if (state.sandruVerify.serverError) {
+        formError.textContent = state.sandruVerify.serverError;
+        formError.classList.remove('hidden');
+      } else {
+        formError.textContent = '';
+        formError.classList.add('hidden');
+      }
+    }
+
+    if (submitBtn) {
+      const ready = Boolean(state.sandruVerify.entryId) && hasDoc && hasReceipt && !isDuplicate;
+      submitBtn.disabled = !ready;
+    }
+  }
+
+  function setSandruSlotError(slot, msg) {
+    const errEl = document.getElementById(slot === 'doc' ? 'sandruDocError' : 'sandruReceiptError');
+    const dzEl = document.getElementById(slot === 'doc' ? 'sandruDocDropzone' : 'sandruReceiptDropzone');
+    if (errEl) {
+      if (msg) {
+        errEl.textContent = msg;
+        errEl.classList.remove('hidden');
+      } else {
+        errEl.textContent = '';
+        errEl.classList.add('hidden');
+      }
+    }
+    if (dzEl) {
+      dzEl.classList.toggle('has-error', Boolean(msg));
+    }
+  }
+
+  function resetSandruSlot(slot) {
+    const isDoc = slot === 'doc';
+    state.sandruVerify.serverError = '';
+    if (isDoc) {
+      state.sandruVerify.docDataUrl = '';
+      state.sandruVerify.docFileName = '';
+    } else {
+      state.sandruVerify.receiptDataUrl = '';
+      state.sandruVerify.receiptFileName = '';
+    }
+    const input = document.getElementById(isDoc ? 'sandruDocPhotoInput' : 'sandruReceiptPhotoInput');
+    const dz = document.getElementById(isDoc ? 'sandruDocDropzone' : 'sandruReceiptDropzone');
+    const previewWrap = document.getElementById(isDoc ? 'sandruDocPreviewWrap' : 'sandruReceiptPreviewWrap');
+    const previewImg = document.getElementById(isDoc ? 'sandruDocPreviewImg' : 'sandruReceiptPreviewImg');
+    if (input) input.value = '';
+    if (dz) dz.classList.remove('hidden', 'has-error', 'is-dragover');
+    if (previewWrap) previewWrap.classList.add('hidden');
+    if (previewImg) previewImg.src = '';
+    setSandruSlotError(slot, '');
+    updateSandruVerifyUi();
+  }
+
+  async function handleSandruPhotoFile(slot, file) {
+    state.sandruVerify.serverError = '';
+    setSandruSlotError(slot, '');
+    const check = await validateClientJpegFile(file);
+    if (!check.ok) {
+      resetSandruSlot(slot);
+      setSandruSlotError(slot, check.error);
+      showToast(check.error, 'error');
       return;
     }
 
-    entriesContainer.innerHTML = stats.entries.map(entry => {
-      const delay = formatDelayLabel(entry);
-      return `
-        <div class="entry-card">
-          <div class="entry-card-top">
-            <div class="entry-title">${escapeHtml(entry.reasonTitle)}</div>
-            <span class="badge-pill ${delay.cls}">${escapeHtml(delay.text)}</span>
-          </div>
-          <div class="entry-meta">
-            <span>Quando è successo: ${escapeHtml(formatIncidentDisplay(entry))}</span>
-          </div>
-          <div class="entry-actions">
-            ${entry.status === 'pending' ? `
-              <button type="button" class="btn-small-primary" data-action="quick-complete" data-entry-id="${entry.id}">Segna Portata</button>
-            ` : `
-              <button type="button" class="btn-small-secondary" data-action="reopen-entry" data-entry-id="${entry.id}">Riapri</button>
-            `}
-            <button type="button" class="btn-small-secondary" data-action="edit-entry" data-entry-id="${entry.id}">Modifica</button>
-            <button type="button" class="btn-small-secondary" style="color:var(--accent-red);" data-action="delete-entry" data-entry-id="${entry.id}">Elimina</button>
-          </div>
-        </div>
-      `;
-    }).join('');
+    try {
+      const compressed = await compressImageToJpeg(file, 1080, 0.8, 550 * 1024);
+      if (!compressed?.dataUrl || !compressed.dataUrl.startsWith('data:image/jpeg;base64,')) {
+        throw new Error('Conversione JPEG non riuscita');
+      }
+      const isDoc = slot === 'doc';
+      const fallbackName = isDoc ? 'documento.jpeg' : 'scontrino.jpeg';
+      const displayName = file.name && file.name.trim() ? file.name.trim() : fallbackName;
+      if (isDoc) {
+        state.sandruVerify.docDataUrl = compressed.dataUrl;
+        state.sandruVerify.docFileName = displayName;
+      } else {
+        state.sandruVerify.receiptDataUrl = compressed.dataUrl;
+        state.sandruVerify.receiptFileName = displayName;
+      }
+
+      const kb = Math.max(1, Math.round((compressed.dataUrl.length * 0.75) / 1024));
+      const dz = document.getElementById(isDoc ? 'sandruDocDropzone' : 'sandruReceiptDropzone');
+      const previewWrap = document.getElementById(isDoc ? 'sandruDocPreviewWrap' : 'sandruReceiptPreviewWrap');
+      const previewImg = document.getElementById(isDoc ? 'sandruDocPreviewImg' : 'sandruReceiptPreviewImg');
+      const metaEl = document.getElementById(isDoc ? 'sandruDocFileMeta' : 'sandruReceiptFileMeta');
+
+      if (previewImg) previewImg.src = compressed.dataUrl;
+      if (metaEl) metaEl.textContent = `${displayName} · ${kb} KB`;
+      if (dz) dz.classList.add('hidden');
+      if (previewWrap) previewWrap.classList.remove('hidden');
+      updateSandruVerifyUi();
+    } catch (_) {
+      resetSandruSlot(slot);
+      const errMsg = 'Immagine JPEG corrotta o non leggibile. Prova con un\'altra foto.';
+      setSandruSlotError(slot, errMsg);
+      showToast(errMsg, 'error');
+    }
+  }
+
+  function openSandruVerifySheet(preferredEntryId = '') {
+    const sandruEntries = state.pasteEntries.filter(e => e.playerId === 'sandru' && e.status !== 'completed');
+    if (sandruEntries.length === 0) {
+      showToast('Sandru non ha nessuna pasta da eliminare al momento.');
+      return;
+    }
+
+    const chosen = sandruEntries.find(e => e.id === preferredEntryId) || sandruEntries[0];
+    state.sandruVerify = {
+      entryId: chosen.id,
+      docDataUrl: '',
+      docFileName: '',
+      receiptDataUrl: '',
+      receiptFileName: '',
+      serverError: ''
+    };
+
+    document.getElementById('sandruVerifyEntryId').value = chosen.id;
+    resetSandruSlot('doc');
+    resetSandruSlot('receipt');
+
+    const targetBox = document.getElementById('sandruTargetEntryBox');
+    if (targetBox) {
+      if (sandruEntries.length === 1) {
+        targetBox.innerHTML = `
+          <div class="sandru-target-label">Pasta da eliminare</div>
+          <div class="sandru-target-title">${escapeHtml(chosen.reasonTitle)}</div>
+          <div class="sandru-target-meta">Quando è successo: ${escapeHtml(formatIncidentDisplay(chosen))}</div>
+        `;
+      } else {
+        targetBox.innerHTML = `
+          <label for="sandruEntryPickerSelect" class="sandru-target-label">Scegli la pasta di Sandru da eliminare</label>
+          <select id="sandruEntryPickerSelect" class="field-input" style="margin-top:0.35rem; background:var(--bg-surface);">
+            ${sandruEntries.map(e => `
+              <option value="${escapeHtml(e.id)}" ${e.id === chosen.id ? 'selected' : ''}>
+                ${escapeHtml(e.reasonTitle)} (${escapeHtml(formatIncidentDisplay(e))})
+              </option>
+            `).join('')}
+          </select>
+        `;
+        const picker = document.getElementById('sandruEntryPickerSelect');
+        picker?.addEventListener('change', (ev) => {
+          state.sandruVerify.entryId = ev.target.value;
+          state.sandruVerify.serverError = '';
+          document.getElementById('sandruVerifyEntryId').value = ev.target.value;
+          updateSandruVerifyUi();
+        });
+      }
+    }
+
+    updateSandruVerifyUi();
+    openSheet('sheetSandruVerify');
   }
 
   // ==========================================
@@ -848,7 +1348,7 @@
         ? `<img src="${escapeHtml(p.avatarUrl)}" alt="${escapeHtml(p.name)}" class="avatar-img" loading="lazy" />`
         : getInitials(p.name);
       return `
-        <button type="button" class="player-pick-card ${isSelected ? 'is-selected' : ''}" data-pick-player="${p.id}">
+        <button type="button" class="player-pick-card ${isSelected ? 'is-selected' : ''}" role="radio" aria-checked="${isSelected ? 'true' : 'false'}" data-pick-player="${p.id}">
           <span class="player-pick-avatar" style="background:${p.avatarColor}">${avatarContent}</span>
           <span class="player-pick-name">${escapeHtml(p.name)}</span>
         </button>
@@ -859,7 +1359,11 @@
       card.addEventListener('click', () => {
         const pid = card.getAttribute('data-pick-player');
         hiddenInput.value = pid;
-        grid.querySelectorAll('.player-pick-card').forEach(c => c.classList.toggle('is-selected', c === card));
+        grid.querySelectorAll('.player-pick-card').forEach(c => {
+          const active = c === card;
+          c.classList.toggle('is-selected', active);
+          c.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
       });
     });
   }
@@ -875,10 +1379,11 @@
     );
     const isOtherActive = Boolean(activeLabel && !matchedPreset);
 
-    wrap.innerHTML = DEFAULT_REASON_OPTIONS.map(label => {
+    wrap.innerHTML = DEFAULT_REASON_OPTIONS.map((label, idx) => {
       const isActive = matchedPreset === label;
+      const isOddLast = (idx === DEFAULT_REASON_OPTIONS.length - 1) && (DEFAULT_REASON_OPTIONS.length % 2 === 1);
       return `
-        <button type="button" class="reason-option-btn ${isActive ? 'active' : ''}" data-reason-label="${escapeHtml(label)}">
+        <button type="button" class="reason-option-btn ${isOddLast ? 'is-full-span' : ''} ${isActive ? 'active' : ''}" data-reason-label="${escapeHtml(label)}">
           ${escapeHtml(label)}
         </button>
       `;
@@ -1080,7 +1585,7 @@
 
     const lastMatch = playedMatches[playedMatches.length - 1];
     const res = getMatchResultInfo(lastMatch);
-    const outcomeLabel = res.didWeWin ? 'Vittoria Volley Ladispoli' : 'Sconfitta';
+    const outcomeLabel = res.didWeWin ? 'Vittoria' : 'Sconfitta';
     const outcomeCls = res.didWeWin ? 'is-win' : 'is-loss';
 
     card.classList.remove('hidden', 'is-loss');
@@ -1114,7 +1619,15 @@
       ` : ''}
     `;
 
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
     card.onclick = () => openMatchDetailSheet(lastMatch.id);
+    card.onkeydown = (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        openMatchDetailSheet(lastMatch.id);
+      }
+    };
   }
 
   function renderNextMatchCard() {
@@ -1167,10 +1680,10 @@
 
       <div class="nm-actions">
         <button type="button" class="btn-primary-half" data-action="open-match" data-match-id="${nextMatch.id}">
-          ${res.played ? 'Vedi Parziali Set' : 'Aggiungi al Calendario'}
+          ${res.played ? 'Vedi Parziali' : 'Al Calendario'}
         </button>
         <a href="${buildGoogleMapsUrl(nextMatch)}" target="_blank" rel="noopener noreferrer" class="btn-secondary-half">
-          Apri Palestra in Maps
+          Apri in Maps
         </a>
       </div>
     `;
@@ -1216,7 +1729,7 @@
     monthLabel.textContent = currentMonthObj.fullLabel;
     const countThisMonth = matchesByMonth.get(currentMonthObj.key) || 0;
     if (monthMatchCount) {
-      monthMatchCount.textContent = `${countThisMonth} ${countThisMonth === 1 ? 'partita nel mese' : 'partite nel mese'}`;
+      monthMatchCount.textContent = `${countThisMonth} ${countThisMonth === 1 ? 'partita' : 'partite'}`;
     }
 
     // 2. Build 7-Col Spatial Grid (Monday = 0 .. Sunday = 6)
@@ -2015,29 +2528,51 @@
     }).join('');
   }
 
-  function compressImageToJpeg(file, maxDim = 1080, quality = 0.82) {
+  function compressImageToJpeg(file, maxDim = 1080, quality = 0.82, maxBinaryBytes = 0) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
         const img = new Image();
         img.onload = () => {
-          let { width, height } = img;
-          if (width > maxDim || height > maxDim) {
-            if (width >= height) {
-              height = Math.round((height * maxDim) / width);
-              width = maxDim;
-            } else {
-              width = Math.round((width * maxDim) / height);
-              height = maxDim;
+          let curMax = maxDim;
+          let curQuality = quality;
+          let dataUrl = '';
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+
+          const renderPass = () => {
+            let { width, height } = img;
+            if (width > curMax || height > curMax) {
+              if (width >= height) {
+                height = Math.round((height * curMax) / width);
+                width = curMax;
+              } else {
+                width = Math.round((width * curMax) / height);
+                height = curMax;
+              }
+            }
+            canvas.width = Math.max(1, width);
+            canvas.height = Math.max(1, height);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            dataUrl = canvas.toDataURL('image/jpeg', curQuality);
+          };
+
+          renderPass();
+          if (maxBinaryBytes > 0) {
+            let attempts = 0;
+            while (Math.ceil((dataUrl.length - 23) * 0.75) > maxBinaryBytes && attempts < 6) {
+              attempts += 1;
+              if (curQuality > 0.56) {
+                curQuality = Math.max(0.52, Number((curQuality - 0.1).toFixed(2)));
+              } else {
+                curMax = Math.max(480, Math.round(curMax * 0.8));
+              }
+              renderPass();
             }
           }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          canvas.toBlob(blob => resolve({ dataUrl, blob }), 'image/jpeg', quality);
+          canvas.toBlob(blob => resolve({ dataUrl, blob }), 'image/jpeg', curQuality);
         };
         img.onerror = () => reject(new Error('Immagine non valida'));
         img.src = reader.result;
@@ -2184,36 +2719,49 @@
     }
   }
 
-  function openAdminSheet(onSuccessCallback = null) {
+  function openAdminSheet(onSuccessCallback = null, options = {}) {
     state.pendingAdminCallback = onSuccessCallback;
+    state.pendingAdminSandruEntryId = options.sandruEntryId || null;
+
     const unlockForm = document.getElementById('formAdminUnlock');
     const unlockedPanel = document.getElementById('adminUnlockedPanel');
+    const sandruAltBox = document.getElementById('adminSandruOptionBox');
+    const adminErr = document.getElementById('adminUnlockError');
     const title = document.getElementById('sheetAdminTitle');
     const sub = document.getElementById('sheetAdminSubtitle');
+
+    if (adminErr) {
+      adminErr.textContent = '';
+      adminErr.classList.add('hidden');
+    }
 
     if (state.isAdmin && !onSuccessCallback) {
       title.textContent = 'Impostazioni Admin';
       sub.textContent = 'Gestisci la sessione temporanea o cambia il codice Admin';
       unlockForm.classList.add('hidden');
       unlockedPanel.classList.remove('hidden');
+      sandruAltBox?.classList.add('hidden');
     } else {
       title.textContent = 'Codice Admin';
       sub.textContent = onSuccessCallback
-        ? 'Inserisci il codice Admin (098765) per confermare questa operazione'
+        ? 'Inserisci il codice Admin per confermare questa operazione'
         : 'Inserisci il codice Admin per sbloccare la sessione temporanea';
       unlockForm.classList.remove('hidden');
       unlockedPanel.classList.add('hidden');
+      if (sandruAltBox) {
+        sandruAltBox.classList.toggle('hidden', !state.pendingAdminSandruEntryId);
+      }
       document.getElementById('adminCodeModalInput').value = '';
       setTimeout(() => document.getElementById('adminCodeModalInput')?.focus(), 60);
     }
     openSheet('sheetAdmin');
   }
 
-  function ensureAdminOrPrompt(callback) {
+  function ensureAdminOrPrompt(callback, options = {}) {
     if (state.isAdmin && state.adminCode) {
       return callback(state.adminCode);
     }
-    openAdminSheet(callback);
+    openAdminSheet(callback, options);
   }
 
   // ==========================================
@@ -2293,7 +2841,11 @@
     document.querySelectorAll('#playerFilterControl .seg-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         state.playerFilter = btn.getAttribute('data-filter');
-        document.querySelectorAll('#playerFilterControl .seg-btn').forEach(b => b.classList.toggle('active', b === btn));
+        document.querySelectorAll('#playerFilterControl .seg-btn').forEach(b => {
+          const active = b === btn;
+          b.classList.toggle('active', active);
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
         renderCompactPlayersList();
       });
     });
@@ -2431,15 +2983,28 @@
     });
 
     // Admin Unlock Form
+    document.getElementById('adminCodeModalInput')?.addEventListener('input', () => {
+      const adminErr = document.getElementById('adminUnlockError');
+      if (adminErr) {
+        adminErr.textContent = '';
+        adminErr.classList.add('hidden');
+      }
+    });
+
     document.getElementById('formAdminUnlock').addEventListener('submit', async (e) => {
       e.preventDefault();
       const code = document.getElementById('adminCodeModalInput').value.trim();
+      const adminErr = document.getElementById('adminUnlockError');
       if (!code) return;
       try {
         await apiFetch('/api/admin/verify', {
           method: 'POST',
           body: JSON.stringify({ code })
         });
+        if (adminErr) {
+          adminErr.textContent = '';
+          adminErr.classList.add('hidden');
+        }
         closeSheet('sheetAdmin');
         if (typeof state.pendingAdminCallback === 'function') {
           const cb = state.pendingAdminCallback;
@@ -2454,7 +3019,12 @@
           showToast('Modalità Admin temporanea attiva');
         }
       } catch (err) {
-        showToast(err.message || 'Codice errato');
+        const msg = err.message || 'Codice errato';
+        if (adminErr) {
+          adminErr.textContent = msg;
+          adminErr.classList.remove('hidden');
+        }
+        showToast(msg, 'error');
       }
     });
 
@@ -2485,6 +3055,141 @@
       renderMediaView();
       showToast('Sessione Admin bloccata');
     });
+
+    // "Sei Sandru?" trigger inside Admin Prompt (only shown for Sandru's paste entries)
+    document.getElementById('btnAdminIamSandru')?.addEventListener('click', () => {
+      const targetEntryId = state.pendingAdminSandruEntryId;
+      state.pendingAdminCallback = null;
+      closeSheet('sheetAdmin');
+      setTimeout(() => openSandruVerifySheet(targetEntryId), 120);
+    });
+
+    // Sandru JPEG Verification Sheet controls
+    document.getElementById('sandruDocPhotoInput')?.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) handleSandruPhotoFile('doc', file);
+    });
+    document.getElementById('sandruReceiptPhotoInput')?.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) handleSandruPhotoFile('receipt', file);
+    });
+    document.getElementById('btnRemoveSandruDoc')?.addEventListener('click', () => {
+      resetSandruSlot('doc');
+      document.getElementById('sandruDocPhotoInput')?.click();
+    });
+    document.getElementById('btnRemoveSandruReceipt')?.addEventListener('click', () => {
+      resetSandruSlot('receipt');
+      document.getElementById('sandruReceiptPhotoInput')?.click();
+    });
+    document.getElementById('sandruDocPreviewBtn')?.addEventListener('click', () => {
+      if (!state.sandruVerify.docDataUrl) return;
+      document.getElementById('lightboxImg').src = state.sandruVerify.docDataUrl;
+      document.getElementById('lightboxCaption').textContent = 'Anteprima foto con documento in mano (JPEG)';
+      openSheet('sheetImageLightbox');
+    });
+    document.getElementById('sandruReceiptPreviewBtn')?.addEventListener('click', () => {
+      if (!state.sandruVerify.receiptDataUrl) return;
+      document.getElementById('lightboxImg').src = state.sandruVerify.receiptDataUrl;
+      document.getElementById('lightboxCaption').textContent = 'Anteprima foto scontrino paste (JPEG)';
+      openSheet('sheetImageLightbox');
+    });
+
+    // Drag & Drop support on Sandru JPEG dropzones
+    [
+      { id: 'sandruDocDropzone', slot: 'doc' },
+      { id: 'sandruReceiptDropzone', slot: 'receipt' }
+    ].forEach(({ id, slot }) => {
+      const dz = document.getElementById(id);
+      if (!dz) return;
+      ['dragenter', 'dragover'].forEach(evt => {
+        dz.addEventListener(evt, (ev) => {
+          ev.preventDefault();
+          dz.classList.add('is-dragover');
+        });
+      });
+      ['dragleave', 'drop'].forEach(evt => {
+        dz.addEventListener(evt, (ev) => {
+          ev.preventDefault();
+          dz.classList.remove('is-dragover');
+        });
+      });
+      dz.addEventListener('drop', (ev) => {
+        const file = ev.dataTransfer?.files?.[0];
+        if (file) handleSandruPhotoFile(slot, file);
+      });
+    });
+
+    document.getElementById('formSandruVerify')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const entryId = state.sandruVerify.entryId || document.getElementById('sandruVerifyEntryId').value;
+      const docPhoto = state.sandruVerify.docDataUrl;
+      const receiptPhoto = state.sandruVerify.receiptDataUrl;
+
+      if (!entryId) {
+        showToast('Seleziona la pasta da eliminare', 'error');
+        return;
+      }
+      if (!docPhoto) {
+        setSandruSlotError('doc', 'Carica la foto in formato JPEG di te che tieni il documento in mano.');
+        return;
+      }
+      if (!receiptPhoto) {
+        setSandruSlotError('receipt', 'Carica la foto in formato JPEG dello scontrino delle paste portate.');
+        return;
+      }
+      if (docPhoto === receiptPhoto) {
+        updateSandruVerifyUi();
+        return;
+      }
+
+      const submitBtn = document.getElementById('btnSubmitSandruVerify');
+      state.sandruVerify.serverError = '';
+      updateSandruVerifyUi();
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Verifica in corso...';
+      }
+
+      try {
+        const res = await apiFetch(`/api/paste/${entryId}/sandru-clear`, {
+          method: 'POST',
+          body: JSON.stringify({ docPhoto, receiptPhoto })
+        });
+        state.pasteEntries = res.pasteEntries || [];
+        state.sandruProofs = res.sandruProofs || [];
+        state.sandruVerify.serverError = '';
+        saveLocalBackup();
+        closeSheet('sheetSandruVerify');
+        renderPasteView();
+        showToast('Prove JPEG verificate! Pasta di Sandru eliminata.', 'success');
+      } catch (err) {
+        state.sandruVerify.serverError = err.message || 'Verifica non riuscita';
+        showToast(err.message || 'Verifica JPEG non riuscita', 'error');
+      } finally {
+        if (submitBtn) {
+          submitBtn.textContent = 'Elimina pasta';
+        }
+        updateSandruVerifyUi();
+      }
+    });
+
+    // Global Escape key closes topmost open bottom sheet / lightbox
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeTopmostSheet();
+      }
+    });
+
+    // Topbar depth elevation on scroll (IntersectionObserver, no scroll listeners)
+    const sentinel = document.getElementById('topScrollSentinel');
+    const topbar = document.querySelector('.topbar');
+    if (sentinel && topbar && 'IntersectionObserver' in window) {
+      const obs = new IntersectionObserver((entries) => {
+        const isAtTop = entries[0]?.isIntersecting;
+        topbar.classList.toggle('is-scrolled', !isAtTop);
+      }, { threshold: [0, 1] });
+      obs.observe(sentinel);
+    }
 
     // Calendar Prev/Next Month Buttons
     const btnPrevM = document.getElementById('btnCalPrevMonth');
@@ -2535,7 +3240,11 @@
     document.querySelectorAll('#mediaTabControl .seg-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         state.mediaTab = btn.getAttribute('data-mediatab');
-        document.querySelectorAll('#mediaTabControl .seg-btn').forEach(b => b.classList.toggle('active', b === btn));
+        document.querySelectorAll('#mediaTabControl .seg-btn').forEach(b => {
+          const active = b === btn;
+          b.classList.toggle('active', active);
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
         renderMediaView();
       });
     });
@@ -2744,6 +3453,7 @@
       if (action === 'quick-complete') {
         e.stopPropagation();
         const entryId = actionEl.getAttribute('data-entry-id');
+        const targetEntry = state.pasteEntries.find(item => item.id === entryId);
         ensureAdminOrPrompt(async (code) => {
           try {
             const res = await apiFetch(`/api/paste/${entryId}`, {
@@ -2757,9 +3467,41 @@
             state.pasteEntries = res.pasteEntries;
             saveLocalBackup();
             renderPasteView();
-            showToast('Paste segnate come portate');
+            showToast('Paste segnate come portate', 'success');
           } catch (err) {
-            showToast(err.message);
+            showToast(err.message, 'error');
+          }
+        }, { sandruEntryId: (targetEntry?.playerId === 'sandru' && targetEntry?.status !== 'completed') ? targetEntry.id : null });
+      } else if (action === 'sandru-self-clear') {
+        e.stopPropagation();
+        const entryId = actionEl.getAttribute('data-entry-id') || '';
+        openSandruVerifySheet(entryId);
+      } else if (action === 'delete-sandru-proof') {
+        e.stopPropagation();
+        const proofId = actionEl.getAttribute('data-proof-id');
+        if (state.isAdmin && state.adminCode && actionEl.getAttribute('data-confirm-armed') !== 'true') {
+          actionEl.setAttribute('data-confirm-armed', 'true');
+          actionEl.textContent = 'Conferma?';
+          setTimeout(() => {
+            if (actionEl.isConnected && actionEl.getAttribute('data-confirm-armed') === 'true') {
+              actionEl.removeAttribute('data-confirm-armed');
+              actionEl.textContent = 'Elimina';
+            }
+          }, 3500);
+          return;
+        }
+        ensureAdminOrPrompt(async (code) => {
+          try {
+            const res = await apiFetch(`/api/sandru-proofs/${proofId}`, {
+              method: 'DELETE',
+              body: JSON.stringify({ adminCode: code })
+            });
+            state.sandruProofs = res.sandruProofs || [];
+            saveLocalBackup();
+            renderPasteView();
+            showToast('Prova eliminata');
+          } catch (err) {
+            showToast(err.message, 'error');
           }
         });
       } else if (action === 'open-player') {
@@ -2783,11 +3525,29 @@
             renderPasteView();
             showToast('Paste riaperte');
           } catch (err) {
-            showToast(err.message);
+            showToast(err.message, 'error');
           }
         });
       } else if (action === 'delete-entry') {
+        e.stopPropagation();
         const entryId = actionEl.getAttribute('data-entry-id');
+        const targetEntry = state.pasteEntries.find(item => item.id === entryId);
+
+        // Two-tap inline safety when Admin is already unlocked
+        if (state.isAdmin && state.adminCode && actionEl.getAttribute('data-confirm-armed') !== 'true') {
+          actionEl.setAttribute('data-confirm-armed', 'true');
+          actionEl.classList.add('is-confirm-armed');
+          actionEl.textContent = 'Conferma?';
+          setTimeout(() => {
+            if (actionEl.isConnected && actionEl.getAttribute('data-confirm-armed') === 'true') {
+              actionEl.removeAttribute('data-confirm-armed');
+              actionEl.classList.remove('is-confirm-armed');
+              actionEl.textContent = 'Elimina';
+            }
+          }, 3500);
+          return;
+        }
+
         ensureAdminOrPrompt(async (code) => {
           try {
             const res = await apiFetch(`/api/paste/${entryId}`, {
@@ -2799,9 +3559,9 @@
             renderPasteView();
             showToast('Voce eliminata');
           } catch (err) {
-            showToast(err.message);
+            showToast(err.message, 'error');
           }
-        });
+        }, { sandruEntryId: (targetEntry?.playerId === 'sandru' && targetEntry?.status !== 'completed') ? targetEntry.id : null });
       } else if (action === 'open-match') {
         const matchId = actionEl.getAttribute('data-match-id');
         openMatchDetailSheet(matchId);
@@ -2879,6 +3639,7 @@
           ensureAdminOrPrompt(doDelete);
         }
       } else if (action === 'open-lightbox') {
+        e.stopPropagation();
         const imgUrl = actionEl.getAttribute('data-img-url');
         const cap = actionEl.getAttribute('data-caption') || '';
         document.getElementById('lightboxImg').src = imgUrl;

@@ -44,6 +44,7 @@ const DEFAULT_DB = {
     { id: 'evento-importante', icon: '🥂', label: 'Evento importante', isBuiltIn: true }
   ],
   pasteEntries: [],
+  sandruProofs: [],
   users: {},
   videos: [],
   socks: []
@@ -100,6 +101,7 @@ function normalizeDb(rawObj) {
     db.customReasons = JSON.parse(JSON.stringify(DEFAULT_DB.customReasons));
   }
   if (!db.pasteEntries || !Array.isArray(db.pasteEntries)) db.pasteEntries = [];
+  if (!db.sandruProofs || !Array.isArray(db.sandruProofs)) db.sandruProofs = [];
   if (!db.users || typeof db.users !== 'object' || Array.isArray(db.users)) db.users = {};
   if (!db.videos || !Array.isArray(db.videos)) db.videos = [];
   if (!db.socks || !Array.isArray(db.socks)) db.socks = [];
@@ -553,21 +555,30 @@ function parseBody(req, maxBytes = 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let totalBytes = 0;
+    let tooLarge = false;
     req.on('data', chunk => {
       totalBytes += chunk.length;
       if (totalBytes > maxBytes) {
-        req.destroy();
-        return reject(new Error('Richiesta troppo grande'));
+        tooLarge = true;
+        chunks.length = 0;
+        return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
+      if (tooLarge) {
+        const err = new Error('Richiesta troppo grande (riduci la dimensione dei file)');
+        err.status = 413;
+        return reject(err);
+      }
       const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw) return resolve({});
       try {
         resolve(JSON.parse(raw));
       } catch (e) {
-        reject(new Error('JSON non valido'));
+        const err = new Error('JSON non valido');
+        err.status = 400;
+        reject(err);
       }
     });
     req.on('error', reject);
@@ -578,15 +589,24 @@ function parseRawBody(req, maxBytes = 15 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let totalBytes = 0;
+    let tooLarge = false;
     req.on('data', chunk => {
       totalBytes += chunk.length;
       if (totalBytes > maxBytes) {
-        req.destroy();
-        return reject(new Error('File troppo grande (max 15 MB)'));
+        tooLarge = true;
+        chunks.length = 0;
+        return;
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('end', () => {
+      if (tooLarge) {
+        const err = new Error('File troppo grande (max 15 MB)');
+        err.status = 413;
+        return reject(err);
+      }
+      resolve(Buffer.concat(chunks));
+    });
     req.on('error', reject);
   });
 }
@@ -599,6 +619,67 @@ function checkAdmin(req, body, db) {
 }
 
 const WRONG_PIN_MSG = '⚠️ PIN errato! Attenzione: se sei Sandru che sta provando a fare l\'accesso di nascosto, il tuo telefono verrà bloccato all\'istante (e porti 2 vassoi di paste).';
+
+function validateSandruJpegProof(rawValue, label) {
+  const val = String(rawValue || '').trim();
+  if (!val) {
+    return { valid: false, error: `Manca la foto JPEG (${label})` };
+  }
+
+  // Case 1: Base64 JPEG Data URL (strictly JPEG + magic bytes check)
+  const dataMatch = val.match(/^data:image\/(jpeg|jpg);base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (dataMatch) {
+    const cleanB64 = dataMatch[2].replace(/\s+/g, '');
+    let buf;
+    try {
+      buf = Buffer.from(cleanB64, 'base64');
+    } catch (_) {
+      return { valid: false, error: `Foto JPEG non valida (${label})` };
+    }
+    if (!buf || buf.length < 100) {
+      return { valid: false, error: `File JPEG troppo piccolo o danneggiato (${label})` };
+    }
+    if (buf.length > 750 * 1024) {
+      return { valid: false, error: `Foto JPEG troppo pesante dopo la compressione (${label})` };
+    }
+    // Check JPEG SOI marker (0xFF 0xD8 0xFF) and EOI marker (0xFF 0xD9)
+    const hasSoi = buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF;
+    const hasEoi = buf.lastIndexOf(Buffer.from([0xFF, 0xD9])) > 2;
+    if (!hasSoi || !hasEoi) {
+      return { valid: false, error: `Il file per "${label}" non è un vero JPEG (.jpg / .jpeg)` };
+    }
+    const fingerprint = crypto.createHash('sha256').update(buf).digest('hex');
+    return { valid: true, value: `data:image/jpeg;base64,${cleanB64}`, fingerprint };
+  }
+
+  // Case 2: Configured Cloudinary URL ending strictly in .jpg/.jpeg
+  const cloudName = (process.env.CLOUDINARY_CLOUD_NAME || '').trim();
+  if (cloudName && val.startsWith(`https://res.cloudinary.com/${cloudName}/`)) {
+    try {
+      const parsed = new URL(val);
+      if (/\.jpe?g$/i.test(parsed.pathname)) {
+        return { valid: true, value: val, fingerprint: val };
+      }
+    } catch (_) {}
+  }
+
+  // Case 3: Local /uploads/ file that actually exists on disk and has JPEG magic bytes
+  if (val.startsWith('/uploads/')) {
+    const fileName = path.basename(val.split('?')[0]);
+    const absUpload = path.join(UPLOADS_DIR, fileName);
+    if (/\.jpe?g$/i.test(fileName) && fs.existsSync(absUpload) && fs.statSync(absUpload).isFile()) {
+      const diskBuf = fs.readFileSync(absUpload);
+      const hasSoi = diskBuf.length >= 100 && diskBuf[0] === 0xFF && diskBuf[1] === 0xD8 && diskBuf[2] === 0xFF;
+      const hasEoi = diskBuf.lastIndexOf(Buffer.from([0xFF, 0xD9])) > 2;
+      if (hasSoi && hasEoi) {
+        const fingerprint = crypto.createHash('sha256').update(diskBuf).digest('hex');
+        return { valid: true, value: `/uploads/${fileName}`, fingerprint };
+      }
+    }
+  }
+
+  return { valid: false, error: `Solo formato JPEG (.jpg / .jpeg) consentito per "${label}"` };
+}
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -762,6 +843,7 @@ const server = http.createServer(async (req, res) => {
         players: db.players,
         customReasons: db.customReasons,
         pasteEntries: db.pasteEntries,
+        sandruProofs: db.sandruProofs,
         videos: db.videos,
         socks: db.socks,
         currentUser: getCurrentUser(req, db)
@@ -862,6 +944,74 @@ const server = http.createServer(async (req, res) => {
         customReasons: db.customReasons,
         pasteEntries: db.pasteEntries
       });
+    }
+
+    if (pathname.startsWith('/api/paste/') && pathname.endsWith('/sandru-clear') && req.method === 'POST') {
+      const db = await loadDb();
+      const body = await parseBody(req, 3 * 1024 * 1024);
+      const id = pathname.slice('/api/paste/'.length, -'/sandru-clear'.length);
+      const entry = db.pasteEntries.find(e => e.id === id);
+
+      if (!entry) {
+        return sendJson(res, 404, { error: 'Pasta non trovata' });
+      }
+      if (entry.playerId !== 'sandru') {
+        return sendJson(res, 403, { error: 'Questa opzione di verifica è valida esclusivamente per le paste di Sandru' });
+      }
+      if (entry.status === 'completed') {
+        return sendJson(res, 400, { error: 'Questa pasta risulta già portata e archiviata.' });
+      }
+
+      const docCheck = validateSandruJpegProof(body.docPhoto, 'Foto con documento in mano');
+      if (!docCheck.valid) {
+        return sendJson(res, 400, { error: docCheck.error });
+      }
+      const receiptCheck = validateSandruJpegProof(body.receiptPhoto, 'Foto scontrino delle paste');
+      if (!receiptCheck.valid) {
+        return sendJson(res, 400, { error: receiptCheck.error });
+      }
+      if (docCheck.value === receiptCheck.value || (docCheck.fingerprint && docCheck.fingerprint === receiptCheck.fingerprint)) {
+        return sendJson(res, 400, { error: 'Furbacchione Sandru! Hai caricato la stessa foto due volte: servono sia il documento in mano sia lo scontrino.' });
+      }
+
+      const proof = {
+        id: 'sproof-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        entryId: entry.id,
+        playerId: 'sandru',
+        reasonTitle: entry.reasonTitle,
+        incidentDate: entry.incidentDate,
+        incidentLabel: entry.incidentLabel || '',
+        docPhotoUrl: docCheck.value,
+        receiptPhotoUrl: receiptCheck.value,
+        clearedAt: new Date().toISOString()
+      };
+
+      db.pasteEntries = db.pasteEntries.filter(e => e.id !== id);
+      db.sandruProofs.unshift(proof);
+      await persistDb(db);
+
+      return sendJson(res, 200, {
+        ok: true,
+        proof,
+        pasteEntries: db.pasteEntries,
+        sandruProofs: db.sandruProofs
+      });
+    }
+
+    if (pathname.startsWith('/api/sandru-proofs/') && req.method === 'DELETE') {
+      const db = await loadDb();
+      const body = await parseBody(req);
+      if (!checkAdmin(req, body, db)) {
+        return sendJson(res, 401, { error: WRONG_PIN_MSG });
+      }
+      const id = pathname.replace('/api/sandru-proofs/', '');
+      const exists = db.sandruProofs.some(p => p.id === id);
+      if (!exists) {
+        return sendJson(res, 404, { error: 'Prova verifica non trovata' });
+      }
+      db.sandruProofs = db.sandruProofs.filter(p => p.id !== id);
+      await persistDb(db);
+      return sendJson(res, 200, { sandruProofs: db.sandruProofs });
     }
 
     if (pathname.startsWith('/api/paste/') && req.method === 'PUT') {
@@ -1223,8 +1373,11 @@ const server = http.createServer(async (req, res) => {
       res.end('Not Found');
     }
   } catch (err) {
-    console.error('Server error:', err);
-    sendJson(res, 500, { error: err.message || 'Errore interno del server' });
+    const status = (err && Number.isInteger(err.status)) ? err.status : 500;
+    if (status >= 500) {
+      console.error('Server error:', err);
+    }
+    sendJson(res, status, { error: err.message || 'Errore interno del server' });
   }
 });
 
