@@ -760,7 +760,14 @@ const server = http.createServer(async (req, res) => {
 
   try {
     // HEALTH & CONFIG
-    if (pathname === '/api/health' && req.method === 'GET') {
+    if (pathname === '/api/health' && (req.method === 'GET' || req.method === 'HEAD')) {
+      if (req.method === 'HEAD') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate'
+        });
+        return res.end();
+      }
       return sendJson(res, 200, {
         ok: true,
         persistence: isGistEnabled() ? 'github-gist' : 'local-disk',
@@ -1516,6 +1523,26 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+function startRenderKeepAlive() {
+  const rawUrl = (process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/+$/, '');
+  if (!rawUrl || !rawUrl.startsWith('https://')) return;
+  if (process.env.DISABLE_SELF_PING === '1') return;
+  if (!isGistEnabled()) return; // Keep only the primary Gist-backed service awake (750h/mo free limit)
+
+  const healthUrl = `${rawUrl}/api/health`;
+  const intervalMs = 10 * 60 * 1000;
+  const timer = setInterval(() => {
+    const req = https.get(healthUrl, { timeout: 10000 }, (res) => {
+      res.resume();
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => {});
+  }, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  console.log(`Keep-alive self-ping attivo ogni 10 minuti verso ${healthUrl}`);
+}
+
 server.listen(PORT, () => {
   console.log(`🏐 Volley Ladispoli Hub attivo su http://localhost:${PORT}`);
+  startRenderKeepAlive();
 });
