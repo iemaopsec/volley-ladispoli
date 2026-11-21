@@ -112,6 +112,9 @@
 
         <!-- 14 PLAYERS COMPACT IOS LIST -->
         <div id="playersList" class="ios-list-group"></div>
+
+        <!-- DEDICATED CHRONIC DELAY SECTION FOR SANDRU (SHOWN IN "IN RITARDO") -->
+        <div id="sandruOverdueSection" class="sandru-overdue-section hidden"></div>
       </div>
 
       <!-- RECENT COMPLETED / ARCHIVE DISCLOSURE -->
@@ -527,12 +530,24 @@
         <!-- LOGGED IN VIEW -->
         <div id="accountLoggedInPanel" class="hidden">
           <div class="account-user-header">
-            <img id="accountUserAvatar" src="/logo-ladispoli.jpg" alt="" class="account-user-avatar" />
+            <label for="accountAvatarInput" class="account-avatar-edit-wrap" title="Cambia foto profilo">
+              <img id="accountUserAvatar" src="/logo-ladispoli.jpg" alt="" class="account-user-avatar" />
+              <span class="account-avatar-badge" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+              </span>
+            </label>
             <div style="min-width:0; flex:1;">
               <div id="accountUserName" class="account-user-name">Giocatore</div>
               <div id="accountUserEmail" class="account-user-email"></div>
             </div>
           </div>
+
+          <div class="account-avatar-actions">
+            <input type="file" id="accountAvatarInput" accept="image/*" class="hidden-file-input" />
+            <label for="accountAvatarInput" id="btnUploadAccountAvatar" class="btn-small-secondary">Cambia foto profilo</label>
+            <button type="button" id="btnResetAccountAvatar" class="text-action-btn hidden">Ripristina foto Google</button>
+          </div>
+          <p class="field-hint-text" style="margin-top:0.25rem;">Se ti colleghi a un giocatore qui sotto, la tua foto apparirà in tutta l'app.</p>
 
           <div id="accountUserStats" class="account-stats-grid"></div>
 

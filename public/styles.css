@@ -3319,6 +3319,56 @@ body.sheet-open {
 }
 
 /* ==========================================
+   CUSTOM ACCOUNT AVATAR & SANDRU OVERDUE SECTION
+   ========================================== */
+.account-avatar-edit-wrap {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.account-avatar-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  color: #fff;
+  border: 2px solid var(--bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.account-avatar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  margin-top: 0.65rem;
+}
+
+.sandru-overdue-section {
+  margin-top: 1rem;
+}
+
+.sandru-overdue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0.25rem 0.45rem;
+}
+
+.sandru-overdue-card {
+  border-color: rgba(217, 22, 69, 0.28);
+}
+
+/* ==========================================
    DESKTOP POINTER-FINE HOVER REFINEMENTS
    ========================================== */
 @media (hover: hover) and (pointer: fine) {

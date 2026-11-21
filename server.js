@@ -86,8 +86,12 @@ function attachProfilePhotos(players) {
     } catch (_) {}
   }
   for (const p of players) {
-    if (foundByPlayerId[p.id]) {
+    if (p.customAvatarUrl) {
+      p.avatarUrl = p.customAvatarUrl;
+    } else if (foundByPlayerId[p.id]) {
       p.avatarUrl = foundByPlayerId[p.id];
+    } else {
+      delete p.avatarUrl;
     }
   }
 }
@@ -790,11 +794,15 @@ const server = http.createServer(async (req, res) => {
       }
 
       const existing = db.users[info.sub] || {};
+      const googlePic = info.picture || existing.googlePicture || '';
+      const customPic = existing.customPicture || '';
       const userObj = {
         id: info.sub,
         name: info.name || info.given_name || info.email || 'Giocatore',
         email: info.email || '',
-        picture: info.picture || '',
+        googlePicture: googlePic,
+        customPicture: customPic,
+        picture: customPic || googlePic || '',
         linkedPlayerId: existing.linkedPlayerId || '',
         createdAt: existing.createdAt || new Date().toISOString(),
         lastLoginAt: new Date().toISOString()
@@ -824,10 +832,73 @@ const server = http.createServer(async (req, res) => {
       if (pid && !db.players.some(p => p.id === pid)) {
         return sendJson(res, 400, { error: 'Giocatore non trovato nella rosa' });
       }
+      const oldPid = user.linkedPlayerId || '';
       user.linkedPlayerId = pid;
       db.users[user.id] = user;
+
+      if (user.customPicture) {
+        if (oldPid && oldPid !== pid) {
+          const oldPlayer = db.players.find(p => p.id === oldPid);
+          if (oldPlayer && oldPlayer.customAvatarUrl === user.customPicture) {
+            delete oldPlayer.customAvatarUrl;
+          }
+        }
+        if (pid) {
+          const newPlayer = db.players.find(p => p.id === pid);
+          if (newPlayer) newPlayer.customAvatarUrl = user.customPicture;
+        }
+        attachProfilePhotos(db.players);
+      }
+
       await persistDb(db);
-      return sendJson(res, 200, { user });
+      return sendJson(res, 200, { user, players: db.players });
+    }
+
+    if (pathname === '/api/auth/avatar' && req.method === 'POST') {
+      const db = await loadDb();
+      const user = getCurrentUser(req, db);
+      if (!user) {
+        return sendJson(res, 401, { error: 'Accedi con Google per impostare la foto profilo' });
+      }
+      const body = await parseBody(req, 1.5 * 1024 * 1024);
+      const avatarUrl = String(body.avatarUrl || '').trim();
+
+      if (avatarUrl) {
+        const isDataImage = /^data:image\/(jpeg|jpg|png|webp);base64,/i.test(avatarUrl);
+        const isSafeUrl = avatarUrl.startsWith('/uploads/') || avatarUrl.startsWith('https://') || avatarUrl.startsWith('http://');
+        if (!isDataImage && !isSafeUrl) {
+          return sendJson(res, 400, { error: 'Formato foto profilo non supportato' });
+        }
+        if (isDataImage && avatarUrl.length > 450 * 1024) {
+          return sendJson(res, 400, { error: 'Foto profilo troppo pesante' });
+        }
+      }
+
+      user.customPicture = avatarUrl;
+      user.picture = avatarUrl || user.googlePicture || '';
+      db.users[user.id] = user;
+
+      if (user.linkedPlayerId) {
+        const linked = db.players.find(p => p.id === user.linkedPlayerId);
+        if (linked) {
+          if (avatarUrl) {
+            linked.customAvatarUrl = avatarUrl;
+          } else {
+            delete linked.customAvatarUrl;
+          }
+          attachProfilePhotos(db.players);
+        }
+      }
+
+      for (const v of db.videos) {
+        if (v.authorId === user.id) v.authorPicture = user.picture;
+      }
+      for (const s of db.socks) {
+        if (s.authorId === user.id) s.authorPicture = user.picture;
+      }
+
+      await persistDb(db);
+      return sendJson(res, 200, { user, players: db.players });
     }
 
     if (pathname === '/api/auth/logout' && req.method === 'POST') {

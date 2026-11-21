@@ -369,6 +369,7 @@
   // PLAYER STATS CALCULATION
   // ==========================================
   function computePlayerStats(playerId) {
+    const isSandru = playerId === 'sandru';
     const entries = state.pasteEntries.filter(e => e.playerId === playerId);
     const pendingEntries = [];
     const overdueEntries = [];
@@ -385,7 +386,7 @@
         completedQty += 1;
       } else {
         const elapsedDays = Math.max(0, calcDaysDiff(entry.incidentDate));
-        const isOverdue = elapsedDays >= 7;
+        const isOverdue = isSandru || elapsedDays >= 7;
         const enriched = Object.assign({}, entry, {
           daysLate: elapsedDays,
           isOverdue
@@ -411,7 +412,8 @@
       pendingQty,
       overdueQty,
       completedQty,
-      maxDaysLate
+      maxDaysLate,
+      isAlwaysLate: isSandru
     };
   }
 
@@ -424,6 +426,12 @@
       return { text: `Portata ${formatShortDate(entry.completedDate || entry.incidentDate)}`, cls: 'badge-done' };
     }
     const elapsed = Math.max(0, calcDaysDiff(entry.incidentDate));
+    if (entry.playerId === 'sandru') {
+      return {
+        text: elapsed >= 7 ? `In ritardo (${elapsed}g fa)` : 'Sempre in ritardo',
+        cls: 'badge-overdue'
+      };
+    }
     if (elapsed >= 7) {
       return { text: `Arretrata (${elapsed}g fa)`, cls: 'badge-overdue' };
     }
@@ -479,7 +487,7 @@
       noteEl.textContent = `${totalPending} ${totalPending === 1 ? 'pasta da portare' : 'paste da portare'} nello spogliatoio`;
     } else {
       noteEl.className = 'summary-note';
-      noteEl.textContent = 'Tutti in regola · Tocca + Segna in basso quando qualcuno deve portare le paste';
+      noteEl.textContent = 'Tutti in regola (tranne Sandru, sempre in ritardo) · Tocca + Segna per nuove paste';
     }
 
     // 2. Group 1: "Da portare all'allenamento" (Active Debts)
@@ -539,18 +547,84 @@
     }
   }
 
+  function renderPlayerRowHtml(player, stats) {
+    let subHtml = '';
+    let rightBadge = '';
+
+    if (stats.overdueQty > 0) {
+      const firstReason = stats.overdueEntries[0]?.reasonTitle || 'Paste in ritardo';
+      const lateText = stats.isAlwaysLate
+        ? (stats.maxDaysLate >= 7 ? `Sempre in ritardo (${stats.maxDaysLate}g fa)` : 'Sempre in ritardo')
+        : `Da portare (${stats.maxDaysLate}g fa)`;
+      subHtml = `
+        <div class="row-sub sub-overdue">
+          <span class="status-dot status-dot-red"></span>
+          <span>${lateText} · ${escapeHtml(firstReason)}</span>
+        </div>
+      `;
+      rightBadge = `<span class="badge-pill badge-overdue">${stats.overdueQty} ${stats.overdueQty === 1 ? 'arretrata' : 'arretrate'}</span>`;
+    } else if (stats.isAlwaysLate) {
+      subHtml = `
+        <div class="row-sub sub-overdue">
+          <span class="status-dot status-dot-red"></span>
+          <span>Sempre in ritardo · È Sandru</span>
+        </div>
+      `;
+      rightBadge = `<span class="badge-pill badge-overdue">Sempre in ritardo</span>`;
+    } else if (stats.pendingQty > 0) {
+      const nextEntry = stats.pendingEntries[0];
+      subHtml = `
+        <div class="row-sub sub-owing">
+          <span class="status-dot status-dot-red"></span>
+          <span>Da portare · ${escapeHtml(nextEntry.reasonTitle)} (${escapeHtml(formatIncidentDisplay(nextEntry))})</span>
+        </div>
+      `;
+      rightBadge = `<span class="badge-pill badge-owing-red">${stats.pendingQty} da portare</span>`;
+    } else {
+      const extraDone = stats.completedQty > 0
+        ? ` · ${stats.completedQty} già ${stats.completedQty === 1 ? 'portata' : 'portate'}`
+        : '';
+      subHtml = `
+        <div class="row-sub sub-clean">
+          <span class="status-dot status-dot-green"></span>
+          <span>In regola${extraDone}</span>
+        </div>
+      `;
+      rightBadge = `<span class="badge-pill badge-clean-green">✓ In regola</span>`;
+    }
+
+    return `
+      <button type="button" class="list-row" data-action="open-player" data-player-id="${player.id}">
+        <div class="row-left">
+          ${renderAvatarHtml(player, 'avatar-circle')}
+          <div class="row-text">
+            <div class="row-title">${escapeHtml(player.name)}</div>
+            ${subHtml}
+          </div>
+        </div>
+        <div class="row-right">
+          ${rightBadge}
+          <svg class="row-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        </div>
+      </button>
+    `;
+  }
+
   function renderCompactPlayersList() {
     const listEl = document.getElementById('playersList');
+    const sandruSection = document.getElementById('sandruOverdueSection');
     if (!listEl) return;
 
     const q = state.playerSearch.trim().toLowerCase();
-    const items = state.players.map(player => ({
+    const allWithStats = state.players.map(player => ({
       player,
       stats: computePlayerStats(player.id)
-    })).filter(({ player, stats }) => {
+    }));
+
+    const items = allWithStats.filter(({ player, stats }) => {
       if (q && !player.name.toLowerCase().includes(q)) return false;
       if (state.playerFilter === 'owing') return stats.pendingQty > 0;
-      if (state.playerFilter === 'overdue') return stats.overdueQty > 0;
+      if (state.playerFilter === 'overdue') return player.id !== 'sandru' && stats.overdueQty > 0;
       return true;
     });
 
@@ -561,70 +635,43 @@
       if (b.stats.overdueQty !== a.stats.overdueQty) return b.stats.overdueQty - a.stats.overdueQty;
       if (b.stats.maxDaysLate !== a.stats.maxDaysLate) return b.stats.maxDaysLate - a.stats.maxDaysLate;
       if (b.stats.pendingQty !== a.stats.pendingQty) return b.stats.pendingQty - a.stats.pendingQty;
+      if (b.stats.isAlwaysLate !== a.stats.isAlwaysLate) return (b.stats.isAlwaysLate ? 1 : 0) - (a.stats.isAlwaysLate ? 1 : 0);
       if (b.stats.completedQty !== a.stats.completedQty) return b.stats.completedQty - a.stats.completedQty;
       return a.player.name.localeCompare(b.player.name, 'it');
     });
 
     if (items.length === 0) {
+      const emptyText = state.playerFilter === 'overdue'
+        ? 'Nessun altro compagno in ritardo.'
+        : 'Nessun giocatore in questa vista';
       listEl.innerHTML = `
         <div style="padding: 1.5rem; text-align: center; color: var(--text-tertiary); font-size: 0.85rem;">
-          Nessun giocatore in questa vista
+          ${emptyText}
         </div>
       `;
-      return;
+    } else {
+      listEl.innerHTML = items.map(({ player, stats }) => renderPlayerRowHtml(player, stats)).join('');
     }
 
-    listEl.innerHTML = items.map(({ player, stats }) => {
-      let subHtml = '';
-      let rightBadge = '';
-
-      if (stats.overdueQty > 0) {
-        const firstReason = stats.overdueEntries[0]?.reasonTitle || 'Paste in ritardo';
-        subHtml = `
-          <div class="row-sub sub-overdue">
-            <span class="status-dot status-dot-red"></span>
-            <span>Da portare (${stats.maxDaysLate}g fa) · ${escapeHtml(firstReason)}</span>
+    if (sandruSection) {
+      const sandruItem = allWithStats.find(({ player }) => player.id === 'sandru');
+      const matchesSearch = !q || (sandruItem && sandruItem.player.name.toLowerCase().includes(q));
+      if (state.playerFilter === 'overdue' && sandruItem && matchesSearch) {
+        sandruSection.classList.remove('hidden');
+        sandruSection.innerHTML = `
+          <div class="sandru-overdue-header">
+            <h2 class="ios-section-title">Sezione Ritardi · Sandru</h2>
+            <span class="badge-pill badge-overdue">Sempre in ritardo</span>
+          </div>
+          <div class="ios-list-group sandru-overdue-card">
+            ${renderPlayerRowHtml(sandruItem.player, sandruItem.stats)}
           </div>
         `;
-        rightBadge = `<span class="badge-pill badge-overdue">${stats.overdueQty} ${stats.overdueQty === 1 ? 'arretrata' : 'arretrate'}</span>`;
-      } else if (stats.pendingQty > 0) {
-        const nextEntry = stats.pendingEntries[0];
-        subHtml = `
-          <div class="row-sub sub-owing">
-            <span class="status-dot status-dot-red"></span>
-            <span>Da portare · ${escapeHtml(nextEntry.reasonTitle)} (${escapeHtml(formatIncidentDisplay(nextEntry))})</span>
-          </div>
-        `;
-        rightBadge = `<span class="badge-pill badge-owing-red">${stats.pendingQty} da portare</span>`;
       } else {
-        const extraDone = stats.completedQty > 0
-          ? ` · ${stats.completedQty} già ${stats.completedQty === 1 ? 'portata' : 'portate'}`
-          : '';
-        subHtml = `
-          <div class="row-sub sub-clean">
-            <span class="status-dot status-dot-green"></span>
-            <span>In regola${extraDone}</span>
-          </div>
-        `;
-        rightBadge = `<span class="badge-pill badge-clean-green">✓ In regola</span>`;
+        sandruSection.classList.add('hidden');
+        sandruSection.innerHTML = '';
       }
-
-      return `
-        <button type="button" class="list-row" data-action="open-player" data-player-id="${player.id}">
-          <div class="row-left">
-            ${renderAvatarHtml(player, 'avatar-circle')}
-            <div class="row-text">
-              <div class="row-title">${escapeHtml(player.name)}</div>
-              ${subHtml}
-            </div>
-          </div>
-          <div class="row-right">
-            ${rightBadge}
-            <svg class="row-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-          </div>
-        </button>
-      `;
-    }).join('');
+    }
   }
 
   function renderHistoryArchive(playerMap) {
@@ -924,7 +971,13 @@
 
     document.getElementById('sheetPlayerName').textContent = player.name;
     const sheetSub = document.getElementById('sheetPlayerSubtitle');
-    if (stats.overdueQty > 0) {
+    if (player.id === 'sandru') {
+      sheetSub.textContent = stats.pendingQty > 0
+        ? `In ritardo · Da portare (${stats.pendingQty})`
+        : 'Sempre in ritardo (di default)';
+      sheetSub.style.color = 'var(--accent-red)';
+      sheetSub.style.fontWeight = '600';
+    } else if (stats.overdueQty > 0) {
       sheetSub.textContent = `Da portare · In ritardo di ${stats.maxDaysLate} giorni`;
       sheetSub.style.color = 'var(--accent-red)';
       sheetSub.style.fontWeight = '600';
@@ -1275,6 +1328,7 @@
     'Patente / Auto nuova',
     'Compleanno',
     'Ritardo in allenamento',
+    'Palla sotto rete',
     'Sono Sandru'
   ];
 
@@ -2228,8 +2282,7 @@
     }
   }
 
-  function openAccountSheet(onLoginCallback = null) {
-    state.pendingLoginCallback = onLoginCallback;
+  function populateAccountSheet() {
     const outPanel = document.getElementById('accountLoggedOutPanel');
     const inPanel = document.getElementById('accountLoggedInPanel');
     const title = document.getElementById('sheetAccountTitle');
@@ -2245,6 +2298,11 @@
       av.src = state.currentUser.picture || '/logo-ladispoli.jpg';
       document.getElementById('accountUserName').textContent = state.currentUser.name || 'Giocatore';
       document.getElementById('accountUserEmail').textContent = state.currentUser.email || '';
+
+      const resetBtn = document.getElementById('btnResetAccountAvatar');
+      if (resetBtn) {
+        resetBtn.classList.toggle('hidden', !state.currentUser.customPicture);
+      }
 
       const uid = state.currentUser.id;
       const vidCount = state.videos.filter(v => v.authorId === uid).length;
@@ -2284,6 +2342,11 @@
     }
 
     renderPwaInstallState();
+  }
+
+  function openAccountSheet(onLoginCallback = null) {
+    state.pendingLoginCallback = onLoginCallback;
+    populateAccountSheet();
     openSheet('sheetAccount');
   }
 
@@ -2582,6 +2645,33 @@
     });
   }
 
+  function compressSquareAvatarToJpeg(file, size = 360, quality = 0.84) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const side = Math.min(img.width, img.height);
+          const sx = Math.floor((img.width - side) / 2);
+          const sy = Math.floor((img.height - side) / 2);
+          const canvas = document.createElement('canvas');
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, size, size);
+          ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+          const dataUrl = canvas.toDataURL('image/jpeg', quality);
+          canvas.toBlob(blob => resolve({ dataUrl, blob }), 'image/jpeg', quality);
+        };
+        img.onerror = () => reject(new Error('Immagine non valida'));
+        img.src = reader.result;
+      };
+      reader.onerror = () => reject(new Error('Errore lettura file'));
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function uploadFileToMediaStorage(file, folder, resourceType, onProgress) {
     if (state.appConfig.cloudinaryEnabled) {
       const sig = await apiFetch('/api/upload/signature', {
@@ -2795,7 +2885,58 @@
       });
     });
 
-    // Account Sheet: Link Player, Logout & PWA Install
+    // Account Sheet: Custom Avatar, Link Player, Logout & PWA Install
+    document.getElementById('accountAvatarInput')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      const uploadLbl = document.getElementById('btnUploadAccountAvatar');
+      if (uploadLbl) uploadLbl.textContent = 'Salvataggio...';
+      try {
+        const compressed = await compressSquareAvatarToJpeg(file, 360, 0.84);
+        let avatarUrl = compressed.dataUrl;
+        if (state.appConfig.cloudinaryEnabled && compressed.blob) {
+          const uploaded = await uploadFileToMediaStorage(compressed.blob, 'avatars', 'image');
+          avatarUrl = uploaded.url;
+        }
+        const res = await apiFetch('/api/auth/avatar', {
+          method: 'POST',
+          body: JSON.stringify({ avatarUrl })
+        });
+        state.currentUser = res.user;
+        if (Array.isArray(res.players)) state.players = res.players;
+        saveLocalBackup();
+        updateAccountChrome();
+        populateAccountSheet();
+        renderPasteView();
+        renderMediaView();
+        showToast('Foto profilo aggiornata!', 'success');
+      } catch (err) {
+        showToast(err.message || 'Errore aggiornamento foto profilo', 'error');
+      } finally {
+        if (uploadLbl) uploadLbl.textContent = 'Cambia foto profilo';
+      }
+    });
+
+    document.getElementById('btnResetAccountAvatar')?.addEventListener('click', async () => {
+      try {
+        const res = await apiFetch('/api/auth/avatar', {
+          method: 'POST',
+          body: JSON.stringify({ avatarUrl: '' })
+        });
+        state.currentUser = res.user;
+        if (Array.isArray(res.players)) state.players = res.players;
+        saveLocalBackup();
+        updateAccountChrome();
+        populateAccountSheet();
+        renderPasteView();
+        renderMediaView();
+        showToast('Ripristinata foto Google');
+      } catch (err) {
+        showToast(err.message || 'Errore ripristino foto', 'error');
+      }
+    });
+
     document.getElementById('accountLinkPlayerSelect').addEventListener('change', async (e) => {
       try {
         const res = await apiFetch('/api/auth/link-player', {
@@ -2803,6 +2944,10 @@
           body: JSON.stringify({ playerId: e.target.value })
         });
         state.currentUser = res.user;
+        if (Array.isArray(res.players)) state.players = res.players;
+        saveLocalBackup();
+        updateAccountChrome();
+        renderPasteView();
         renderMediaView();
         showToast('Profilo giocatore aggiornato');
       } catch (err) {
