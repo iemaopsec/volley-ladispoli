@@ -3368,6 +3368,72 @@ body.sheet-open {
   border-color: rgba(217, 22, 69, 0.28);
 }
 
+.account-avatar-zoom-btn {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: 50%;
+  display: inline-flex;
+  cursor: zoom-in;
+  transition: transform 140ms var(--ease-out);
+}
+
+.account-avatar-zoom-btn:active {
+  transform: scale(0.95);
+}
+
+.account-avatar-badge {
+  cursor: pointer;
+  z-index: 2;
+}
+
+.is-zoomable {
+  cursor: zoom-in;
+  transition: transform 140ms var(--ease-out), opacity 140ms ease;
+}
+
+.is-zoomable:active {
+  transform: scale(0.95);
+}
+
+.sheet-verified-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.3rem;
+}
+
+.verified-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #166534;
+  background: rgba(22, 163, 74, 0.11);
+  border: 1px solid rgba(22, 163, 74, 0.24);
+  border-radius: var(--radius-pill);
+  padding: 0.16rem 0.52rem;
+}
+
+.verified-unlink-btn {
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent-red);
+  background: rgba(217, 22, 69, 0.08);
+  border: 1px solid rgba(217, 22, 69, 0.2);
+  border-radius: var(--radius-pill);
+  padding: 0.16rem 0.5rem;
+  cursor: pointer;
+  transition: transform 120ms var(--ease-out), background-color 140ms ease;
+}
+
+.verified-unlink-btn:active {
+  transform: scale(0.95);
+}
+
 /* ==========================================
    DESKTOP POINTER-FINE HOVER REFINEMENTS
    ========================================== */

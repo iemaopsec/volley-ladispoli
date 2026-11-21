@@ -96,6 +96,20 @@ function attachProfilePhotos(players) {
   }
 }
 
+function getClaimedPlayersMap(db) {
+  const claimed = {};
+  if (!db || !db.users || typeof db.users !== 'object') return claimed;
+  for (const u of Object.values(db.users)) {
+    if (u && u.linkedPlayerId) {
+      claimed[u.linkedPlayerId] = {
+        userId: u.id,
+        name: u.name || 'Giocatore'
+      };
+    }
+  }
+  return claimed;
+}
+
 function normalizeDb(rawObj) {
   const db = rawObj && typeof rawObj === 'object' ? rawObj : {};
   if (!db.players || !Array.isArray(db.players) || db.players.length === 0) {
@@ -811,14 +825,17 @@ const server = http.createServer(async (req, res) => {
       await persistDb(db);
 
       const token = signSessionToken(userObj.id, getSessionSecret(db));
-      return sendJson(res, 200, { user: userObj }, {
+      return sendJson(res, 200, { user: userObj, claimedPlayers: getClaimedPlayersMap(db) }, {
         'Set-Cookie': buildSessionCookie(req, token, false)
       });
     }
 
     if (pathname === '/api/auth/me' && req.method === 'GET') {
       const db = await loadDb();
-      return sendJson(res, 200, { user: getCurrentUser(req, db) });
+      return sendJson(res, 200, {
+        user: getCurrentUser(req, db),
+        claimedPlayers: getClaimedPlayersMap(db)
+      });
     }
 
     if (pathname === '/api/auth/link-player' && req.method === 'POST') {
@@ -831,6 +848,16 @@ const server = http.createServer(async (req, res) => {
       const pid = String(body.playerId || '').trim();
       if (pid && !db.players.some(p => p.id === pid)) {
         return sendJson(res, 400, { error: 'Giocatore non trovato nella rosa' });
+      }
+      if (pid) {
+        const owner = Object.values(db.users || {}).find(
+          u => u && u.linkedPlayerId === pid && u.id !== user.id
+        );
+        if (owner) {
+          return sendJson(res, 409, {
+            error: `Questo giocatore è già stato verificato da ${owner.name || 'un altro account'}`
+          });
+        }
       }
       const oldPid = user.linkedPlayerId || '';
       user.linkedPlayerId = pid;
@@ -851,7 +878,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       await persistDb(db);
-      return sendJson(res, 200, { user, players: db.players });
+      return sendJson(res, 200, {
+        user,
+        players: db.players,
+        claimedPlayers: getClaimedPlayersMap(db)
+      });
     }
 
     if (pathname === '/api/auth/avatar' && req.method === 'POST') {
@@ -917,7 +948,8 @@ const server = http.createServer(async (req, res) => {
         sandruProofs: db.sandruProofs,
         videos: db.videos,
         socks: db.socks,
-        currentUser: getCurrentUser(req, db)
+        currentUser: getCurrentUser(req, db),
+        claimedPlayers: getClaimedPlayersMap(db)
       });
     }
 
@@ -945,6 +977,38 @@ const server = http.createServer(async (req, res) => {
       db.adminCode = newCode;
       await persistDb(db);
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (pathname === '/api/admin/unlink-player' && req.method === 'POST') {
+      const db = await loadDb();
+      const body = await parseBody(req);
+      if (!checkAdmin(req, body, db)) {
+        return sendJson(res, 401, { error: WRONG_PIN_MSG });
+      }
+      const playerId = String(body.playerId || '').trim();
+      if (!playerId) {
+        return sendJson(res, 400, { error: 'ID giocatore mancante' });
+      }
+      const targetPlayer = db.players.find(p => p.id === playerId);
+      let avatarChanged = false;
+      for (const u of Object.values(db.users || {})) {
+        if (u && u.linkedPlayerId === playerId) {
+          u.linkedPlayerId = '';
+          if (targetPlayer && u.customPicture && targetPlayer.customAvatarUrl === u.customPicture) {
+            delete targetPlayer.customAvatarUrl;
+            avatarChanged = true;
+          }
+        }
+      }
+      if (avatarChanged) {
+        attachProfilePhotos(db.players);
+      }
+      await persistDb(db);
+      return sendJson(res, 200, {
+        ok: true,
+        players: db.players,
+        claimedPlayers: getClaimedPlayersMap(db)
+      });
     }
 
     // PASTE CRUD

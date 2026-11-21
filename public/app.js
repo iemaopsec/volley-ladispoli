@@ -80,6 +80,7 @@
     videos: [],
     socks: [],
     currentUser: null,
+    claimedPlayers: {},
     appConfig: {
       googleClientId: '',
       cloudinaryCloudName: '',
@@ -174,7 +175,8 @@
     const bg = player?.avatarColor || '#515158';
     const styleStr = `background:${bg};${extraStyle}`;
     if (player && player.avatarUrl) {
-      return `<div class="${cls} has-photo" style="${styleStr}"><img src="${escapeHtml(player.avatarUrl)}" alt="${escapeHtml(player.name)}" class="avatar-img" loading="lazy" /></div>`;
+      const safeName = escapeHtml(player.name);
+      return `<div class="${cls} has-photo is-zoomable" data-action="open-lightbox" data-img-url="${escapeHtml(player.avatarUrl)}" data-caption="${safeName}" role="button" tabindex="0" aria-label="Ingrandisci foto di ${safeName}" style="${styleStr}"><img src="${escapeHtml(player.avatarUrl)}" alt="${safeName}" class="avatar-img" loading="lazy" /></div>`;
     }
     return `<div class="${cls}" style="${styleStr}">${initials}</div>`;
   }
@@ -302,6 +304,7 @@
       state.videos = data.videos || [];
       state.socks = data.socks || [];
       state.currentUser = data.currentUser || null;
+      state.claimedPlayers = data.claimedPlayers || {};
       saveLocalBackup();
     } catch (_) {
       const backup = loadLocalBackup();
@@ -859,7 +862,7 @@
       const onPointerDown = (e) => {
         if (window.innerWidth >= 700) return; // Desktop renders centered modal
         if (activePointerId !== null) return; // Multi-touch guard
-        if (e.target.closest('button, input, select, a, label')) return;
+        if (e.target.closest('button, input, select, a, label, [data-action="open-lightbox"]')) return;
         if (snapClearTimer) {
           clearTimeout(snapClearTimer);
           snapClearTimer = null;
@@ -965,11 +968,42 @@
     avatar.style.background = player.avatarColor;
     if (player.avatarUrl) {
       avatar.innerHTML = `<img src="${escapeHtml(player.avatarUrl)}" alt="${escapeHtml(player.name)}" class="avatar-img" />`;
+      avatar.classList.add('has-photo', 'is-zoomable');
+      avatar.setAttribute('data-action', 'open-lightbox');
+      avatar.setAttribute('data-img-url', player.avatarUrl);
+      avatar.setAttribute('data-caption', player.name);
+      avatar.setAttribute('role', 'button');
+      avatar.setAttribute('tabindex', '0');
+      avatar.setAttribute('aria-label', `Ingrandisci foto di ${player.name}`);
     } else {
       avatar.textContent = getInitials(player.name);
+      avatar.classList.remove('has-photo', 'is-zoomable');
+      avatar.removeAttribute('data-action');
+      avatar.removeAttribute('data-img-url');
+      avatar.removeAttribute('data-caption');
+      avatar.removeAttribute('role');
+      avatar.removeAttribute('tabindex');
+      avatar.removeAttribute('aria-label');
     }
 
     document.getElementById('sheetPlayerName').textContent = player.name;
+    const verifiedRow = document.getElementById('sheetPlayerVerifiedRow');
+    if (verifiedRow) {
+      const claim = state.claimedPlayers?.[playerId];
+      if (claim) {
+        const isMine = Boolean(state.currentUser && claim.userId === state.currentUser.id);
+        const ownerLabel = claim.name ? ` · ${escapeHtml(claim.name)}` : '';
+        const chipText = isMine ? '✓ Profilo verificato (tuo)' : `✓ Profilo verificato${ownerLabel}`;
+        const unlinkBtnHtml = state.isAdmin
+          ? `<button type="button" class="verified-unlink-btn" data-action="admin-unlink-player" data-player-id="${escapeHtml(playerId)}">Scollega</button>`
+          : '';
+        verifiedRow.innerHTML = `<span class="verified-chip">${chipText}</span>${unlinkBtnHtml}`;
+        verifiedRow.classList.remove('hidden');
+      } else {
+        verifiedRow.innerHTML = '';
+        verifiedRow.classList.add('hidden');
+      }
+    }
     const sheetSub = document.getElementById('sheetPlayerSubtitle');
     if (player.id === 'sandru') {
       sheetSub.textContent = stats.pendingQty > 0
@@ -2267,6 +2301,7 @@
         body: JSON.stringify({ credential: response.credential })
       });
       state.currentUser = res.user;
+      if (res.claimedPlayers) state.claimedPlayers = res.claimedPlayers;
       updateAccountChrome();
       closeSheet('sheetAccount');
       renderMediaView();
@@ -2294,8 +2329,15 @@
       outPanel.classList.add('hidden');
       inPanel.classList.remove('hidden');
 
+      const avUrl = state.currentUser.picture || '/logo-ladispoli.jpg';
       const av = document.getElementById('accountUserAvatar');
-      av.src = state.currentUser.picture || '/logo-ladispoli.jpg';
+      av.src = avUrl;
+      const zoomBtn = document.getElementById('accountAvatarZoomBtn');
+      if (zoomBtn) {
+        zoomBtn.setAttribute('data-action', 'open-lightbox');
+        zoomBtn.setAttribute('data-img-url', avUrl);
+        zoomBtn.setAttribute('data-caption', state.currentUser.name || 'Profilo');
+      }
       document.getElementById('accountUserName').textContent = state.currentUser.name || 'Giocatore';
       document.getElementById('accountUserEmail').textContent = state.currentUser.email || '';
 
@@ -2330,9 +2372,32 @@
       `;
 
       const sel = document.getElementById('accountLinkPlayerSelect');
+      const statusNote = document.getElementById('accountLinkStatusNote');
       const currentPid = state.currentUser.linkedPlayerId || '';
+      const claimed = state.claimedPlayers || {};
       sel.innerHTML = `<option value="">-- Nessun giocatore collegato --</option>` +
-        state.players.map(p => `<option value="${p.id}" ${p.id === currentPid ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+        state.players.map(p => {
+          const claim = claimed[p.id];
+          const isClaimedByOther = Boolean(claim && claim.userId !== uid);
+          const isSelected = p.id === currentPid;
+          let label = escapeHtml(p.name);
+          if (isSelected) {
+            label += ' (Verificato)';
+          } else if (isClaimedByOther) {
+            label += ` (Già verificato${claim.name ? ` da ${escapeHtml(claim.name)}` : ''})`;
+          }
+          return `<option value="${p.id}" ${isSelected ? 'selected' : ''} ${isClaimedByOther ? 'disabled' : ''}>${label}</option>`;
+        }).join('');
+      if (statusNote) {
+        if (currentPid) {
+          const linkedP = state.players.find(p => p.id === currentPid);
+          statusNote.textContent = `Hai verificato il profilo di ${linkedP ? linkedP.name : currentPid}: nessun altro account può selezionarlo.`;
+          statusNote.style.color = 'var(--status-green)';
+        } else {
+          statusNote.textContent = 'Ogni giocatore può essere verificato da un solo account Google.';
+          statusNote.style.color = '';
+        }
+      }
     } else {
       title.textContent = 'Accedi con Google';
       sub.textContent = 'Carica video, partecipa ai calzini e vota come sui social';
@@ -2405,7 +2470,7 @@
     const photo = linkedPlayer?.avatarUrl || item.authorPicture;
     const displayName = linkedPlayer ? linkedPlayer.name : (item.authorName || 'Squadra');
     if (photo) {
-      return `<img src="${escapeHtml(photo)}" alt="" class="social-author-avatar" />`;
+      return `<img src="${escapeHtml(photo)}" alt="${escapeHtml(displayName)}" class="social-author-avatar is-zoomable" data-action="open-lightbox" data-img-url="${escapeHtml(photo)}" data-caption="${escapeHtml(displayName)}" role="button" tabindex="0" aria-label="Ingrandisci foto di ${escapeHtml(displayName)}" />`;
     }
     return `<div class="social-author-avatar" style="background:${linkedPlayer?.avatarColor || '#515158'}">${getInitials(displayName)}</div>`;
   }
@@ -2807,6 +2872,9 @@
       btn.classList.remove('is-unlocked');
       label.textContent = 'Admin';
     }
+    if (state.activePlayerSheetId) {
+      populatePlayerSheet(state.activePlayerSheetId);
+    }
   }
 
   function openAdminSheet(onSuccessCallback = null, options = {}) {
@@ -2938,20 +3006,28 @@
     });
 
     document.getElementById('accountLinkPlayerSelect').addEventListener('change', async (e) => {
+      const selEl = e.target;
+      const prevPid = state.currentUser?.linkedPlayerId || '';
       try {
         const res = await apiFetch('/api/auth/link-player', {
           method: 'POST',
-          body: JSON.stringify({ playerId: e.target.value })
+          body: JSON.stringify({ playerId: selEl.value })
         });
         state.currentUser = res.user;
         if (Array.isArray(res.players)) state.players = res.players;
+        if (res.claimedPlayers) state.claimedPlayers = res.claimedPlayers;
         saveLocalBackup();
         updateAccountChrome();
+        populateAccountSheet();
+        if (state.activePlayerSheetId) populatePlayerSheet(state.activePlayerSheetId);
         renderPasteView();
         renderMediaView();
-        showToast('Profilo giocatore aggiornato');
+        showToast(res.user?.linkedPlayerId ? 'Giocatore verificato con successo!' : 'Collegamento giocatore rimosso');
       } catch (err) {
-        showToast(err.message);
+        selEl.value = prevPid;
+        showToast(err.message || 'Impossibile verificare questo giocatore', 'error');
+        await loadAppState();
+        populateAccountSheet();
       }
     });
 
@@ -3783,13 +3859,51 @@
         } else {
           ensureAdminOrPrompt(doDelete);
         }
+      } else if (action === 'admin-unlink-player') {
+        e.stopPropagation();
+        const playerId = actionEl.getAttribute('data-player-id');
+        if (!playerId) return;
+        ensureAdminOrPrompt(async (code) => {
+          try {
+            const res = await apiFetch('/api/admin/unlink-player', {
+              method: 'POST',
+              body: JSON.stringify({ adminCode: code, playerId })
+            });
+            if (Array.isArray(res.players)) state.players = res.players;
+            if (res.claimedPlayers) state.claimedPlayers = res.claimedPlayers;
+            if (state.currentUser && state.currentUser.linkedPlayerId === playerId) {
+              state.currentUser.linkedPlayerId = '';
+            }
+            saveLocalBackup();
+            updateAccountChrome();
+            if (state.activePlayerSheetId === playerId) {
+              populatePlayerSheet(playerId);
+            }
+            renderPasteView();
+            renderMediaView();
+            showToast('Profilo scollegato', 'success');
+          } catch (err) {
+            showToast(err.message || 'Errore scollegamento', 'error');
+          }
+        });
       } else if (action === 'open-lightbox') {
         e.stopPropagation();
+        e.preventDefault();
         const imgUrl = actionEl.getAttribute('data-img-url');
+        if (!imgUrl) return;
         const cap = actionEl.getAttribute('data-caption') || '';
         document.getElementById('lightboxImg').src = imgUrl;
         document.getElementById('lightboxCaption').textContent = cap;
         openSheet('sheetImageLightbox');
+      }
+    });
+
+    document.body.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const target = e.target;
+      if (target && target.matches && target.matches('[data-action="open-lightbox"]')) {
+        e.preventDefault();
+        target.click();
       }
     });
   }
