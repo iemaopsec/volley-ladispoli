@@ -111,6 +111,7 @@
     sockSort: 'top',   // 'top' | 'recent'
     femPhotoSort: 'top', // 'top' | 'recent'
     femPhotoCompressedDataUrl: '',
+    activeCommentsPhotoId: null,
     activeView: 'paste',
     chatPollTimer: null,
     videoUploadSource: 'link', // 'link' | 'file'
@@ -817,6 +818,9 @@
     }
     if (sheetId === 'sheetAdmin') {
       state.pendingAdminSandruEntryId = null;
+    }
+    if (sheetId === 'sheetPhotoComments') {
+      state.activeCommentsPhotoId = null;
     }
 
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2534,6 +2538,7 @@
       if (Array.isArray(data.photos)) {
         state.femPhotos = data.photos;
         renderFemPhotosFeed();
+        if (state.activeCommentsPhotoId) populatePhotoCommentsSheet(state.activeCommentsPhotoId);
       }
     } catch (_) {}
   }
@@ -2611,10 +2616,16 @@
               ${renderFemPhotoAuthorHtml(p)}
             </div>
             <div class="sock-actions-row">
-              <button type="button" class="upvote-btn ${p.hasUpvoted ? 'is-upvoted' : ''}" data-action="upvote-fem-photo" data-photo-id="${escapeHtml(p.id)}">
-                <span>▲</span>
-                <span>${p.upvotesCount || 0}</span>
-              </button>
+              <div style="display:flex; align-items:center; gap:0.4rem;">
+                <button type="button" class="upvote-btn ${p.hasUpvoted ? 'is-upvoted' : ''}" data-action="upvote-fem-photo" data-photo-id="${escapeHtml(p.id)}">
+                  <span>▲</span>
+                  <span>${p.upvotesCount || 0}</span>
+                </button>
+                <button type="button" class="comment-count-btn" data-action="open-photo-comments" data-photo-id="${escapeHtml(p.id)}" aria-label="Apri commenti">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  <span>${p.commentsCount ?? (Array.isArray(p.comments) ? p.comments.length : 0)}</span>
+                </button>
+              </div>
               ${canDel ? `<button type="button" class="text-action-btn" style="color:var(--accent-red); font-size:0.75rem;" data-action="delete-fem-photo" data-photo-id="${escapeHtml(p.id)}">Elimina</button>` : ''}
             </div>
           </div>
@@ -2639,6 +2650,79 @@
       }
       openSheet('sheetUploadFemPhoto');
     }, true);
+  }
+
+  function populatePhotoCommentsSheet(photoId) {
+    const p = (state.femPhotos || []).find(item => item.id === photoId);
+    if (!p) {
+      closeSheet('sheetPhotoComments');
+      return;
+    }
+    state.activeCommentsPhotoId = photoId;
+
+    const comments = Array.isArray(p.comments) ? p.comments : [];
+    const subEl = document.getElementById('sheetPhotoCommentsSub');
+    if (subEl) {
+      subEl.textContent = `${comments.length} ${comments.length === 1 ? 'commento' : 'commenti'}`;
+    }
+
+    const previewEl = document.getElementById('photoCommentsPreview');
+    if (previewEl) {
+      const cap = p.targetName ? `${p.title} (${p.targetName})` : p.title;
+      previewEl.innerHTML = `
+        <img src="${escapeHtml(p.imageUrl)}" alt="${escapeHtml(p.title)}" class="comment-photo-thumb" data-action="open-lightbox" data-img-url="${escapeHtml(p.imageUrl)}" data-caption="${escapeHtml(cap)}" />
+        <div style="min-width:0; flex:1;">
+          <div class="sock-title">${escapeHtml(p.title)}</div>
+          <div style="display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap; margin-top:0.15rem;">
+            ${p.targetName ? `<span class="fem-target-pill" style="margin:0;">${escapeHtml(p.targetName)}</span>` : ''}
+            <span class="sock-meta" style="margin:0;">Di ${escapeHtml(p.authorName || 'Squadra')}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    const listEl = document.getElementById('photoCommentsList');
+    if (listEl) {
+      if (comments.length === 0) {
+        listEl.innerHTML = `<div style="text-align:center; padding: 1rem 0.5rem; color: var(--text-tertiary); font-size: 0.83rem;">Nessun commento ancora. Scrivi il primo.</div>`;
+      } else {
+        listEl.innerHTML = comments.map(c => {
+          const author = c.authorName || 'Squadra';
+          const avHtml = c.authorPicture
+            ? `<img src="${escapeHtml(c.authorPicture)}" alt="${escapeHtml(author)}" class="chat-avatar is-zoomable" data-action="open-lightbox" data-img-url="${escapeHtml(c.authorPicture)}" data-caption="${escapeHtml(author)}" loading="lazy" />`
+            : `<div class="chat-avatar">${escapeHtml(getInitials(author))}</div>`;
+          const canDelComment = Boolean(state.isAdmin || c.canDelete);
+          const delBtn = canDelComment
+            ? `<button type="button" class="chat-delete-btn" data-action="delete-photo-comment" data-photo-id="${escapeHtml(p.id)}" data-comment-id="${escapeHtml(c.id)}">Elimina</button>`
+            : '';
+          return `
+            <div class="photo-comment-item">
+              ${avHtml}
+              <div class="photo-comment-body">
+                <div class="photo-comment-meta">
+                  <span><strong>${escapeHtml(author)}</strong> · ${escapeHtml(formatRelativeTime(c.createdAt))}</span>
+                  ${delBtn}
+                </div>
+                <div class="photo-comment-text">${escapeHtml(c.text)}</div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    const formEl = document.getElementById('photoCommentForm');
+    const promptEl = document.getElementById('photoCommentLoginPrompt');
+    if (formEl && promptEl) {
+      const canWrite = Boolean(state.currentUser || state.isAdmin);
+      formEl.classList.toggle('hidden', !canWrite);
+      promptEl.classList.toggle('hidden', canWrite);
+    }
+  }
+
+  function openPhotoCommentsSheet(photoId) {
+    populatePhotoCommentsSheet(photoId);
+    openSheet('sheetPhotoComments');
   }
 
   function formatChatDayLabel(iso) {
@@ -3851,6 +3935,39 @@
       }, true);
     });
 
+    document.getElementById('btnPhotoCommentLogin')?.addEventListener('click', () => openAccountSheet());
+
+    document.getElementById('photoCommentForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const photoId = state.activeCommentsPhotoId;
+      if (!photoId) return;
+      const input = document.getElementById('photoCommentInput');
+      const btn = document.getElementById('btnSendPhotoComment');
+      const text = (input?.value || '').trim();
+      if (!text) return;
+      requireGoogleLogin(async () => {
+        if (btn) btn.disabled = true;
+        try {
+          const res = await apiFetch(`/api/fem-photos/${encodeURIComponent(photoId)}/comments`, {
+            method: 'POST',
+            body: JSON.stringify({ text })
+          });
+          if (input) input.value = '';
+          if (Array.isArray(res.photos)) {
+            state.femPhotos = res.photos;
+            renderFemPhotosFeed();
+          }
+          populatePhotoCommentsSheet(photoId);
+          const listEl = document.getElementById('photoCommentsList');
+          if (listEl) listEl.scrollTop = listEl.scrollHeight;
+        } catch (err) {
+          showToast(err.message || 'Errore invio commento', 'error');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      }, true);
+    });
+
     const btnSockSort = document.getElementById('btnSockSortToggle');
     btnSockSort.addEventListener('click', () => {
       state.sockSort = state.sockSort === 'top' ? 'recent' : 'top';
@@ -4266,6 +4383,45 @@
         });
       } else if (action === 'open-upload-fem-photo') {
         openUploadFemPhotoSheet();
+      } else if (action === 'open-photo-comments') {
+        const photoId = actionEl.getAttribute('data-photo-id');
+        if (photoId) openPhotoCommentsSheet(photoId);
+      } else if (action === 'delete-photo-comment') {
+        const photoId = actionEl.getAttribute('data-photo-id');
+        const commentId = actionEl.getAttribute('data-comment-id');
+        if (!photoId || !commentId) return;
+        if (actionEl.getAttribute('data-confirm-armed') !== 'true') {
+          actionEl.setAttribute('data-confirm-armed', 'true');
+          actionEl.textContent = 'Conferma?';
+          setTimeout(() => {
+            if (actionEl.isConnected && actionEl.getAttribute('data-confirm-armed') === 'true') {
+              actionEl.removeAttribute('data-confirm-armed');
+              actionEl.textContent = 'Elimina';
+            }
+          }, 3500);
+          return;
+        }
+        const doDeleteComment = async (code = '') => {
+          try {
+            const res = await apiFetch(`/api/fem-photos/${encodeURIComponent(photoId)}/comments/${encodeURIComponent(commentId)}`, {
+              method: 'DELETE',
+              body: JSON.stringify({ adminCode: code || state.adminCode })
+            });
+            if (Array.isArray(res.photos)) {
+              state.femPhotos = res.photos;
+              renderFemPhotosFeed();
+            }
+            populatePhotoCommentsSheet(photoId);
+            showToast('Commento eliminato', 'success');
+          } catch (err) {
+            showToast(err.message || 'Impossibile eliminare', 'error');
+          }
+        };
+        if (state.currentUser || state.isAdmin) {
+          doDeleteComment();
+        } else {
+          ensureAdminOrPrompt(doDeleteComment);
+        }
       } else if (action === 'upvote-fem-photo') {
         const photoId = actionEl.getAttribute('data-photo-id');
         if (!photoId) return;

@@ -784,6 +784,31 @@
   <!-- ==========================================
        SHEET 8: IMAGE LIGHTBOX
        ========================================== -->
+  <div id="sheetPhotoComments" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheetPhotoCommentsTitle">
+    <div class="bottom-sheet" data-sheet="sheetPhotoComments">
+      <div class="sheet-grabber-area"><div class="sheet-grabber"></div></div>
+      <div class="sheet-header">
+        <div>
+          <h3 id="sheetPhotoCommentsTitle" class="sheet-title">Commenti</h3>
+          <p id="sheetPhotoCommentsSub" class="sheet-subtitle"></p>
+        </div>
+        <button type="button" class="sheet-close-btn" data-close="sheetPhotoComments" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="sheet-body" style="padding-bottom: 0.5rem;">
+        <div id="photoCommentsPreview" class="comment-photo-preview"></div>
+        <div id="photoCommentsList" class="photo-comments-list"></div>
+      </div>
+      <form id="photoCommentForm" class="chat-composer hidden">
+        <input type="text" id="photoCommentInput" class="chat-input" maxlength="300" placeholder="Scrivi un commento..." autocomplete="off" />
+        <button type="submit" id="btnSendPhotoComment" class="chat-send-btn">Invia</button>
+      </form>
+      <div id="photoCommentLoginPrompt" class="chat-login-bar">
+        <span>Accedi con Google per commentare</span>
+        <button type="button" id="btnPhotoCommentLogin" class="btn-small-primary">Accedi</button>
+      </div>
+    </div>
+  </div>
+
   <div id="sheetImageLightbox" class="sheet-backdrop lightbox-backdrop hidden" role="dialog" aria-modal="true" aria-label="Anteprima foto ingrandita">
     <div class="lightbox-card">
       <button type="button" class="lightbox-close-btn" data-close="sheetImageLightbox" aria-label="Chiudi">✕</button>

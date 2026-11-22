@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vl-hub-v10';
+const CACHE_NAME = 'vl-hub-v11';
 const PRECACHE_URLS = [
   '/',
   '/index.html',

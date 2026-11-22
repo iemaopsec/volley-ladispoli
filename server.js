@@ -137,6 +137,20 @@ function serializeFemPhotos(list, db, currentUser = null, isAdmin = false) {
     const upvotes = Array.isArray(item.upvotes) ? item.upvotes : [];
     const { authorName, authorPicture } = resolveSocialAuthor(item, db);
     const canDelete = Boolean(isAdmin || (uid && item.authorId && item.authorId === uid));
+    const rawComments = Array.isArray(item.comments) ? item.comments : [];
+    const comments = rawComments.map(c => {
+      const cAuthor = resolveSocialAuthor(c, db);
+      const canDelComment = Boolean(isAdmin || (uid && (c.authorId === uid || item.authorId === uid)));
+      return {
+        id: c.id,
+        text: c.text || '',
+        authorId: c.authorId || '',
+        authorName: cAuthor.authorName,
+        authorPicture: cAuthor.authorPicture,
+        canDelete: canDelComment,
+        createdAt: c.createdAt || ''
+      };
+    });
     return {
       id: item.id,
       title: item.title || '',
@@ -148,6 +162,8 @@ function serializeFemPhotos(list, db, currentUser = null, isAdmin = false) {
       upvotesCount: upvotes.length,
       hasUpvoted: Boolean(uid && upvotes.includes(uid)),
       canDelete,
+      commentsCount: comments.length,
+      comments,
       createdAt: item.createdAt || ''
     };
   });
@@ -1051,6 +1067,11 @@ const server = http.createServer(async (req, res) => {
       }
       for (const fp of db.femPhotos) {
         if (fp.authorId === user.id) fp.authorPicture = user.picture;
+        if (Array.isArray(fp.comments)) {
+          for (const c of fp.comments) {
+            if (c.authorId === user.id) c.authorPicture = user.picture;
+          }
+        }
       }
       for (const cm of db.chatMessages) {
         if (cm.authorId === user.id) cm.authorPicture = user.picture;
@@ -1602,6 +1623,7 @@ const server = http.createServer(async (req, res) => {
         authorPicture: user ? (user.picture || '') : '',
         authorPlayerId: user ? (user.linkedPlayerId || '') : '',
         upvotes: user ? [user.id] : [],
+        comments: [],
         createdAt: new Date().toISOString()
       };
 
@@ -1630,6 +1652,76 @@ const server = http.createServer(async (req, res) => {
       } else {
         photo.upvotes.splice(idx, 1);
       }
+      await persistDb(db);
+      return sendJson(res, 200, {
+        photo: serializeFemPhotos([photo], db, user, isAdmin)[0],
+        photos: serializeFemPhotos(db.femPhotos, db, user, isAdmin)
+      });
+    }
+
+    if (pathname.startsWith('/api/fem-photos/') && pathname.endsWith('/comments') && req.method === 'POST') {
+      const db = await loadDb();
+      const user = getCurrentUser(req, db);
+      const body = await parseBody(req);
+      const isAdmin = checkAdmin(req, body, db);
+      if (!user && !isAdmin) {
+        return sendJson(res, 401, { error: 'Accedi con Google per commentare' });
+      }
+      const text = String(body.text || '').trim().slice(0, 300);
+      if (!text) {
+        return sendJson(res, 400, { error: 'Scrivi un commento' });
+      }
+      const id = pathname.slice('/api/fem-photos/'.length, -'/comments'.length);
+      const photo = db.femPhotos.find(p => p.id === id);
+      if (!photo) {
+        return sendJson(res, 404, { error: 'Foto non trovata' });
+      }
+      if (!Array.isArray(photo.comments)) photo.comments = [];
+      const comment = {
+        id: 'c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        text,
+        authorId: user ? user.id : 'admin',
+        authorName: user ? user.name : 'Admin',
+        authorPicture: user ? (user.picture || '') : '',
+        authorPlayerId: user ? (user.linkedPlayerId || '') : '',
+        createdAt: new Date().toISOString()
+      };
+      photo.comments.push(comment);
+      if (photo.comments.length > 100) {
+        photo.comments = photo.comments.slice(-100);
+      }
+      await persistDb(db);
+      const serializedPhoto = serializeFemPhotos([photo], db, user, isAdmin)[0];
+      return sendJson(res, 201, {
+        comment: serializedPhoto.comments[serializedPhoto.comments.length - 1],
+        photo: serializedPhoto,
+        photos: serializeFemPhotos(db.femPhotos, db, user, isAdmin)
+      });
+    }
+
+    if (pathname.startsWith('/api/fem-photos/') && pathname.includes('/comments/') && req.method === 'DELETE') {
+      const db = await loadDb();
+      const user = getCurrentUser(req, db);
+      const body = await parseBody(req);
+      const isAdmin = checkAdmin(req, body, db);
+      const rest = pathname.slice('/api/fem-photos/'.length);
+      const parts = rest.split('/comments/');
+      const photoId = parts[0] || '';
+      const commentId = parts[1] || '';
+      const photo = db.femPhotos.find(p => p.id === photoId);
+      if (!photo) {
+        return sendJson(res, 404, { error: 'Foto non trovata' });
+      }
+      if (!Array.isArray(photo.comments)) photo.comments = [];
+      const comment = photo.comments.find(c => c.id === commentId);
+      if (!comment) {
+        return sendJson(res, 404, { error: 'Commento non trovato' });
+      }
+      const canDelete = Boolean(isAdmin || (user && (comment.authorId === user.id || photo.authorId === user.id)));
+      if (!canDelete) {
+        return sendJson(res, 401, { error: 'Non autorizzato a eliminare questo commento' });
+      }
+      photo.comments = photo.comments.filter(c => c.id !== commentId);
       await persistDb(db);
       return sendJson(res, 200, {
         photo: serializeFemPhotos([photo], db, user, isAdmin)[0],
