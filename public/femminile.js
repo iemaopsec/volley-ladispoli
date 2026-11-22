@@ -26,8 +26,6 @@
     }
   };
 
-  const DEVICE_ID_KEY = 'vl_fem_device_id_v1';
-  const NICKNAME_KEY = 'vl_fem_nickname_v1';
   const PHOTOS_BACKUP_KEY = 'vl_fem_photos_backup_v1';
 
   const LOCAL_TEAM_LOGOS = {
@@ -80,40 +78,32 @@
     calSelectedDayKey: null,
     femPhotos: [],
     femPhotoSort: 'top', // 'top' | 'recent'
-    femPhotoCompressedDataUrl: ''
+    femPhotoCompressedDataUrl: '',
+    chatMessages: [],
+    currentUser: null,
+    appConfig: { googleClientId: '', cloudinaryEnabled: false },
+    pendingLoginCallback: null,
+    deferredInstallPrompt: null,
+    activeView: 'calendario',
+    chatPollTimer: null
   };
 
-  let memoryDeviceId = '';
-  function getDeviceId() {
-    try {
-      let id = localStorage.getItem(DEVICE_ID_KEY);
-      if (!id) {
-        id = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
-          ? `fem-${crypto.randomUUID()}`
-          : `fem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-        localStorage.setItem(DEVICE_ID_KEY, id);
-      }
-      return id;
-    } catch (_) {
-      if (!memoryDeviceId) {
-        memoryDeviceId = `fem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-      }
-      return memoryDeviceId;
+  function getInitials(name) {
+    const words = (name || '').trim().split(/\s+/);
+    if (words.length >= 2) {
+      return (words[0][0] + words[words.length - 1][0]).toUpperCase();
     }
+    return (name || 'VL').slice(0, 2).toUpperCase();
   }
 
-  function getSavedNickname() {
-    try {
-      return localStorage.getItem(NICKNAME_KEY) || '';
-    } catch (_) {
-      return '';
+  async function apiFetch(url, options = {}) {
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+    const res = await fetch(url, Object.assign({ credentials: 'same-origin' }, options, { headers }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Errore ${res.status}`);
     }
-  }
-
-  function saveNickname(name) {
-    try {
-      localStorage.setItem(NICKNAME_KEY, String(name || '').trim());
-    } catch (_) {}
+    return data;
   }
 
   // ==========================================
@@ -1326,20 +1316,30 @@
 
   async function loadFemPhotos() {
     try {
-      const res = await fetch('/api/fem-photos', {
-        headers: { 'X-Device-Id': getDeviceId() },
-        cache: 'no-store'
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await apiFetch('/api/fem-photos', { cache: 'no-store' });
       if (Array.isArray(data.photos)) {
         state.femPhotos = data.photos;
         savePhotosBackup();
         renderFemPhotosFeed();
+        if (state.currentUser) populateAccountSheetStatsOnly();
       }
     } catch (_) {
       renderFemPhotosFeed();
     }
+  }
+
+  function renderPhotoAuthorHtml(p) {
+    const name = p.authorName || 'Squadra';
+    const timeStr = formatRelativeTime(p.createdAt);
+    const avatarHtml = p.authorPicture
+      ? `<img src="${escapeHtml(p.authorPicture)}" alt="${escapeHtml(name)}" class="fem-photo-avatar is-zoomable" data-action="open-lightbox" data-img-url="${escapeHtml(p.authorPicture)}" data-caption="${escapeHtml(name)}" loading="lazy" />`
+      : `<div class="fem-photo-avatar">${escapeHtml(getInitials(name))}</div>`;
+    return `
+      <div class="fem-photo-author">
+        ${avatarHtml}
+        <div class="sock-meta" style="margin:0;">${escapeHtml(name)} · ${escapeHtml(timeStr)}</div>
+      </div>
+    `;
   }
 
   function renderFemPhotosFeed() {
@@ -1385,7 +1385,6 @@
       const rankNum = rankedIds.indexOf(p.id) + 1;
       const rankCls = rankNum <= 3 ? `rank-${rankNum}` : '';
       const medal = `#${rankNum}`;
-      const metaText = `Di ${p.authorName || 'Compagna'} · ${formatRelativeTime(p.createdAt)}`;
       const caption = p.targetName ? `${p.title} (${p.targetName})` : p.title;
 
       return `
@@ -1398,7 +1397,7 @@
             <div>
               <div class="sock-title">${escapeHtml(p.title)}</div>
               ${p.targetName ? `<span class="fem-target-pill">${escapeHtml(p.targetName)}</span>` : ''}
-              <div class="sock-meta" style="margin-top:0.22rem;">${escapeHtml(metaText)}</div>
+              ${renderPhotoAuthorHtml(p)}
             </div>
             <div class="sock-actions-row">
               <button type="button" class="upvote-btn ${p.hasUpvoted ? 'is-upvoted' : ''}" data-action="upvote-fem-photo" data-photo-id="${escapeHtml(p.id)}">
@@ -1467,24 +1466,400 @@
     });
   }
 
-  function openUploadFemPhotoSheet() {
-    state.femPhotoCompressedDataUrl = '';
-    const form = document.getElementById('formUploadFemPhoto');
-    if (form) form.reset();
-    document.getElementById('femPhotoPreviewWrap')?.classList.add('hidden');
-    const dropLabel = document.getElementById('femPhotoDropLabel');
-    if (dropLabel) dropLabel.textContent = 'Tocca per scegliere o scattare la foto';
+  function compressSquareAvatarToJpeg(file, size = 360, quality = 0.84) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const side = Math.min(img.width, img.height);
+          const sx = Math.floor((img.width - side) / 2);
+          const sy = Math.floor((img.height - side) / 2);
+          const canvas = document.createElement('canvas');
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, size, size);
+          ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = () => reject(new Error('Immagine non valida'));
+        img.src = reader.result;
+      };
+      reader.onerror = () => reject(new Error('Errore lettura file'));
+      reader.readAsDataURL(file);
+    });
+  }
 
-    const authorInput = document.getElementById('femPhotoAuthorInput');
-    if (authorInput) {
-      authorInput.value = getSavedNickname();
+  function openUploadFemPhotoSheet() {
+    requireGoogleLogin(() => {
+      state.femPhotoCompressedDataUrl = '';
+      const form = document.getElementById('formUploadFemPhoto');
+      if (form) form.reset();
+      document.getElementById('femPhotoPreviewWrap')?.classList.add('hidden');
+      const dropLabel = document.getElementById('femPhotoDropLabel');
+      if (dropLabel) dropLabel.textContent = 'Tocca per scegliere o scattare la foto';
+
+      const submitBtn = document.getElementById('btnSubmitFemPhoto');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Pubblica Foto';
+      }
+      openSheet('sheetUploadFemPhoto');
+    });
+  }
+
+  // ==========================================
+  // SHARED TEAM CHAT
+  // ==========================================
+  function formatChatDayLabel(iso) {
+    if (!iso) return '';
+    try {
+      const dt = new Date(iso);
+      const today = new Date();
+      const dtMid = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+      const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+      const diffDays = Math.round((todayMid - dtMid) / 86400000);
+      if (diffDays === 0) return 'Oggi';
+      if (diffDays === 1) return 'Ieri';
+      return dt.toLocaleDateString('it-IT', { day: '2-digit', month: 'short' });
+    } catch (_) {
+      return '';
     }
-    const submitBtn = document.getElementById('btnSubmitFemPhoto');
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Pubblica Foto';
+  }
+
+  function formatChatTime(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    } catch (_) {
+      return '';
     }
-    openSheet('sheetUploadFemPhoto');
+  }
+
+  function renderChatComposerState() {
+    const form = document.getElementById('chatComposerForm');
+    const prompt = document.getElementById('chatLoginPrompt');
+    if (!form || !prompt) return;
+    form.classList.toggle('hidden', !state.currentUser);
+    prompt.classList.toggle('hidden', Boolean(state.currentUser));
+  }
+
+  function renderChatMessages(forceScrollBottom = false) {
+    const listEl = document.getElementById('chatMessagesList');
+    if (!listEl) return;
+
+    const wasNearBottom = (listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight) < 90;
+    const msgs = state.chatMessages || [];
+
+    if (msgs.length === 0) {
+      listEl.innerHTML = `
+        <div class="media-empty-card" style="border:none; background:transparent;">
+          <div>Nessun messaggio ancora. Scrivi il primo!</div>
+        </div>
+      `;
+      return;
+    }
+
+    let lastDay = '';
+    const htmlParts = [];
+    for (const m of msgs) {
+      const dayLabel = formatChatDayLabel(m.createdAt);
+      if (dayLabel && dayLabel !== lastDay) {
+        lastDay = dayLabel;
+        htmlParts.push(`<div class="chat-date-divider">${escapeHtml(dayLabel)}</div>`);
+      }
+
+      const name = m.authorName || 'Squadra';
+      const avatarHtml = m.authorPicture
+        ? `<img src="${escapeHtml(m.authorPicture)}" alt="${escapeHtml(name)}" class="chat-avatar is-zoomable" data-action="open-lightbox" data-img-url="${escapeHtml(m.authorPicture)}" data-caption="${escapeHtml(name)}" loading="lazy" />`
+        : `<div class="chat-avatar">${escapeHtml(getInitials(name))}</div>`;
+
+      const timeStr = formatChatTime(m.createdAt);
+      const delHtml = m.canDelete
+        ? `<button type="button" class="chat-delete-btn" data-action="delete-chat-msg" data-msg-id="${escapeHtml(m.id)}">Elimina</button>`
+        : '';
+
+      htmlParts.push(`
+        <div class="chat-msg-row ${m.isMine ? 'is-mine' : ''}">
+          ${avatarHtml}
+          <div class="chat-msg-col">
+            <div class="chat-msg-meta">
+              ${m.isMine ? '' : `<strong>${escapeHtml(name)}</strong>`}
+              <span>${escapeHtml(timeStr)}</span>
+              ${delHtml}
+            </div>
+            <div class="chat-bubble">${escapeHtml(m.text)}</div>
+          </div>
+        </div>
+      `);
+    }
+
+    listEl.innerHTML = htmlParts.join('');
+    if (forceScrollBottom || wasNearBottom) {
+      listEl.scrollTop = listEl.scrollHeight;
+    }
+  }
+
+  async function loadChatMessages(forceScrollBottom = false) {
+    try {
+      const data = await apiFetch('/api/chat', { cache: 'no-store' });
+      if (Array.isArray(data.messages)) {
+        const prevLast = state.chatMessages[state.chatMessages.length - 1]?.id || '';
+        const prevLen = state.chatMessages.length;
+        state.chatMessages = data.messages;
+        const nextLast = data.messages[data.messages.length - 1]?.id || '';
+        const changed = prevLen !== data.messages.length || prevLast !== nextLast;
+        renderChatMessages(forceScrollBottom || changed);
+      }
+    } catch (_) {}
+  }
+
+  function startChatPolling() {
+    if (state.chatPollTimer) return;
+    state.chatPollTimer = setInterval(() => {
+      if (state.activeView === 'chat' && document.visibilityState === 'visible') {
+        loadChatMessages(false);
+      }
+    }, 4000);
+  }
+
+  function stopChatPolling() {
+    if (state.chatPollTimer) {
+      clearInterval(state.chatPollTimer);
+      state.chatPollTimer = null;
+    }
+  }
+
+  // ==========================================
+  // GOOGLE ACCOUNT & PWA INSTALL
+  // ==========================================
+  let googleInitStarted = false;
+  let googleButtonRendered = false;
+
+  async function loadAppConfig() {
+    try {
+      const cfg = await apiFetch('/api/config');
+      state.appConfig = Object.assign({}, state.appConfig, cfg);
+      if (state.appConfig.googleClientId) {
+        initGoogleSignIn();
+      }
+    } catch (_) {}
+  }
+
+  async function loadAuthMe() {
+    try {
+      const data = await apiFetch('/api/auth/me', { cache: 'no-store' });
+      state.currentUser = data.user || null;
+      updateAccountChrome();
+      renderChatComposerState();
+    } catch (_) {}
+  }
+
+  function updateAccountChrome() {
+    const btn = document.getElementById('btnAccountToggle');
+    const av = document.getElementById('accountPillAvatar');
+    const gIcon = document.getElementById('accountGoogleIcon');
+    const label = document.getElementById('accountPillLabel');
+    if (!btn || !av || !gIcon || !label) return;
+
+    if (state.currentUser) {
+      btn.classList.add('is-signed-in');
+      gIcon.classList.add('hidden');
+      av.classList.remove('hidden');
+      const firstName = (state.currentUser.name || 'Tu').split(' ')[0];
+      label.textContent = firstName;
+      if (state.currentUser.picture) {
+        av.innerHTML = `<img src="${escapeHtml(state.currentUser.picture)}" alt="" />`;
+      } else {
+        av.textContent = getInitials(state.currentUser.name);
+      }
+    } else {
+      btn.classList.remove('is-signed-in');
+      av.classList.add('hidden');
+      av.innerHTML = '';
+      gIcon.classList.remove('hidden');
+      label.textContent = 'Accedi';
+    }
+  }
+
+  function renderPwaInstallState() {
+    const row = document.getElementById('pwaInstallRow');
+    const hint = document.getElementById('pwaInstallHint');
+    const btn = document.getElementById('btnPwaInstall');
+    if (!row || !hint || !btn) return;
+
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    if (isStandalone) {
+      hint.textContent = 'App già installata e avviata a schermo intero.';
+      btn.classList.add('hidden');
+      return;
+    }
+
+    if (state.deferredInstallPrompt) {
+      hint.textContent = 'Installa Volley Ladispoli sulla schermata Home in 1 tocco.';
+      btn.classList.remove('hidden');
+    } else {
+      const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      hint.textContent = isIos
+        ? 'Su iPhone/iPad tocca Condividi (in basso) poi "Aggiungi alla schermata Home".'
+        : 'Dal menu del browser (⋮) tocca "Installa app" o "Aggiungi a schermata Home".';
+      btn.classList.add('hidden');
+    }
+  }
+
+  function initGoogleSignIn() {
+    if (!state.appConfig.googleClientId || googleInitStarted) return;
+
+    let attempts = 0;
+    const tryInit = () => {
+      if (window.google?.accounts?.id) {
+        googleInitStarted = true;
+        window.google.accounts.id.initialize({
+          client_id: state.appConfig.googleClientId,
+          callback: handleGoogleCredentialResponse
+        });
+        renderGoogleSignInButton();
+      } else if (attempts < 25) {
+        attempts += 1;
+        setTimeout(tryInit, 200);
+      }
+    };
+    tryInit();
+  }
+
+  function renderGoogleSignInButton() {
+    const wrap = document.getElementById('googleSignInBtnContainer');
+    const missingNote = document.getElementById('googleConfigMissingNote');
+    if (!wrap) return;
+
+    if (!state.appConfig.googleClientId) {
+      wrap.innerHTML = '';
+      missingNote?.classList.remove('hidden');
+      return;
+    }
+
+    missingNote?.classList.add('hidden');
+    if (window.google?.accounts?.id && !googleButtonRendered) {
+      wrap.innerHTML = '';
+      window.google.accounts.id.renderButton(wrap, {
+        theme: 'outline',
+        size: 'large',
+        shape: 'pill',
+        text: 'signin_with',
+        locale: 'it'
+      });
+      googleButtonRendered = true;
+    }
+  }
+
+  async function handleGoogleCredentialResponse(response) {
+    if (!response || !response.credential) return;
+    try {
+      const res = await apiFetch('/api/auth/google', {
+        method: 'POST',
+        body: JSON.stringify({ credential: response.credential })
+      });
+      state.currentUser = res.user;
+      updateAccountChrome();
+      renderChatComposerState();
+      closeSheet('sheetAccount');
+      loadFemPhotos();
+      loadChatMessages(state.activeView === 'chat');
+      showToast(`Benvenuta, ${(res.user.name || '').split(' ')[0]}!`);
+
+      if (typeof state.pendingLoginCallback === 'function') {
+        const cb = state.pendingLoginCallback;
+        state.pendingLoginCallback = null;
+        cb();
+      }
+    } catch (err) {
+      showToast(err.message || 'Accesso Google non riuscito', 'error');
+    }
+  }
+
+  function populateAccountSheetStatsOnly() {
+    if (!state.currentUser) return;
+    const uid = state.currentUser.id;
+    const photoCount = (state.femPhotos || []).filter(p => p.authorId === uid).length;
+    const votesReceived = (state.femPhotos || [])
+      .filter(p => p.authorId === uid)
+      .reduce((sum, p) => sum + (p.upvotesCount || 0), 0);
+    const msgCount = (state.chatMessages || []).filter(m => m.authorId === uid).length;
+
+    const statsEl = document.getElementById('accountUserStats');
+    if (statsEl) {
+      statsEl.innerHTML = `
+        <div class="sheet-kpi-box">
+          <div class="sheet-kpi-num">${photoCount}</div>
+          <span class="sheet-kpi-label">Foto</span>
+        </div>
+        <div class="sheet-kpi-box">
+          <div class="sheet-kpi-num" style="color:var(--accent-red);">${votesReceived}</div>
+          <span class="sheet-kpi-label">Voti ricevuti</span>
+        </div>
+        <div class="sheet-kpi-box">
+          <div class="sheet-kpi-num">${msgCount}</div>
+          <span class="sheet-kpi-label">Messaggi</span>
+        </div>
+      `;
+    }
+  }
+
+  function populateAccountSheet() {
+    const outPanel = document.getElementById('accountLoggedOutPanel');
+    const inPanel = document.getElementById('accountLoggedInPanel');
+    const title = document.getElementById('sheetAccountTitle');
+    const sub = document.getElementById('sheetAccountSubtitle');
+
+    if (state.currentUser) {
+      title.textContent = 'Il tuo Profilo';
+      sub.textContent = 'Collegato con Google';
+      outPanel.classList.add('hidden');
+      inPanel.classList.remove('hidden');
+
+      const avUrl = state.currentUser.picture || '/logo-ladispoli.jpg';
+      const av = document.getElementById('accountUserAvatar');
+      if (av) av.src = avUrl;
+      const zoomBtn = document.getElementById('accountAvatarZoomBtn');
+      if (zoomBtn) {
+        zoomBtn.setAttribute('data-action', 'open-lightbox');
+        zoomBtn.setAttribute('data-img-url', avUrl);
+        zoomBtn.setAttribute('data-caption', state.currentUser.name || 'Profilo');
+      }
+      document.getElementById('accountUserName').textContent = state.currentUser.name || 'Squadra';
+      document.getElementById('accountUserEmail').textContent = state.currentUser.email || '';
+
+      const resetBtn = document.getElementById('btnResetAccountAvatar');
+      if (resetBtn) {
+        resetBtn.classList.toggle('hidden', !state.currentUser.customPicture);
+      }
+
+      populateAccountSheetStatsOnly();
+    } else {
+      title.textContent = 'Accedi con Google';
+      sub.textContent = 'Carica foto sputtananti, vota e scrivi in chat';
+      inPanel.classList.add('hidden');
+      outPanel.classList.remove('hidden');
+      renderGoogleSignInButton();
+    }
+
+    renderPwaInstallState();
+  }
+
+  function openAccountSheet(onLoginCallback = null) {
+    state.pendingLoginCallback = onLoginCallback;
+    populateAccountSheet();
+    openSheet('sheetAccount');
+  }
+
+  function requireGoogleLogin(callback) {
+    if (state.currentUser) {
+      return callback();
+    }
+    showToast('Accedi con Google per continuare');
+    openAccountSheet(callback);
   }
 
   async function shareCurrentPage() {
@@ -1540,10 +1915,26 @@
     document.querySelectorAll('.nav-tab').forEach(tab => {
       tab.addEventListener('click', () => {
         const viewName = tab.getAttribute('data-view');
+        state.activeView = viewName;
         document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t === tab));
         document.querySelectorAll('.view-panel').forEach(p => p.classList.toggle('active', p.id === `view-${viewName}`));
+        if (viewName === 'chat') {
+          loadChatMessages(true);
+          startChatPolling();
+        } else {
+          stopChatPolling();
+        }
         window.scrollTo({ top: 0, behavior: 'smooth' });
       });
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && state.activeView === 'chat') {
+        loadChatMessages(false);
+        startChatPolling();
+      } else if (document.visibilityState !== 'visible') {
+        stopChatPolling();
+      }
     });
 
     // Championship switcher in Partite
@@ -1599,6 +1990,75 @@
       }
     });
 
+    // Topbar Account & Share
+    document.getElementById('btnAccountToggle')?.addEventListener('click', () => openAccountSheet());
+    document.getElementById('btnSharePage')?.addEventListener('click', shareCurrentPage);
+    document.getElementById('btnChatLogin')?.addEventListener('click', () => openAccountSheet());
+
+    // Account Sheet: Custom Avatar, Logout & PWA Install
+    document.getElementById('accountAvatarInput')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      const uploadLbl = document.getElementById('btnUploadAccountAvatar');
+      if (uploadLbl) uploadLbl.textContent = 'Salvataggio...';
+      try {
+        const avatarUrl = await compressSquareAvatarToJpeg(file, 360, 0.84);
+        const res = await apiFetch('/api/auth/avatar', {
+          method: 'POST',
+          body: JSON.stringify({ avatarUrl })
+        });
+        state.currentUser = res.user;
+        updateAccountChrome();
+        populateAccountSheet();
+        loadFemPhotos();
+        loadChatMessages(false);
+        showToast('Foto profilo aggiornata!', 'success');
+      } catch (err) {
+        showToast(err.message || 'Errore aggiornamento foto profilo', 'error');
+      } finally {
+        if (uploadLbl) uploadLbl.textContent = 'Cambia foto profilo';
+      }
+    });
+
+    document.getElementById('btnResetAccountAvatar')?.addEventListener('click', async () => {
+      try {
+        const res = await apiFetch('/api/auth/avatar', {
+          method: 'POST',
+          body: JSON.stringify({ avatarUrl: '' })
+        });
+        state.currentUser = res.user;
+        updateAccountChrome();
+        populateAccountSheet();
+        loadFemPhotos();
+        loadChatMessages(false);
+        showToast('Ripristinata foto Google');
+      } catch (err) {
+        showToast(err.message || 'Errore ripristino foto', 'error');
+      }
+    });
+
+    document.getElementById('btnLogoutGoogle')?.addEventListener('click', async () => {
+      try {
+        await apiFetch('/api/auth/logout', { method: 'POST' });
+      } catch (_) {}
+      state.currentUser = null;
+      updateAccountChrome();
+      renderChatComposerState();
+      closeSheet('sheetAccount');
+      loadFemPhotos();
+      loadChatMessages(false);
+      showToast('Uscito dall\'account Google');
+    });
+
+    document.getElementById('btnPwaInstall')?.addEventListener('click', async () => {
+      if (!state.deferredInstallPrompt) return;
+      state.deferredInstallPrompt.prompt();
+      await state.deferredInstallPrompt.userChoice;
+      state.deferredInstallPrompt = null;
+      renderPwaInstallState();
+    });
+
     // Spatial Calendar Month Arrows
     document.getElementById('btnCalPrevMonth')?.addEventListener('click', () => {
       const seasonMonths = getSeasonMonths(getDisplayedMatches());
@@ -1626,7 +2086,7 @@
       });
     });
 
-    // Download all ICS for active competition view
+    // Download all ICS
     document.getElementById('btnDownloadAllIcs')?.addEventListener('click', () => {
       const matches = getDisplayedMatches();
       if (matches.length === 0) return;
@@ -1635,11 +2095,6 @@
       showToast('Calendario .ics scaricato');
     });
 
-    document.getElementById('btnSharePage')?.addEventListener('click', shareCurrentPage);
-    document.getElementById('btnRefreshTop')?.addEventListener('click', () => {
-      loadAllFipavData(true);
-      loadFemPhotos();
-    });
     document.getElementById('btnRefreshFipav')?.addEventListener('click', () => loadAllFipavData(true));
     document.getElementById('btnRefreshFipavCal')?.addEventListener('click', () => loadAllFipavData(true));
 
@@ -1682,7 +2137,6 @@
       e.preventDefault();
       const title = (document.getElementById('femPhotoTitleInput')?.value || '').trim();
       const targetName = (document.getElementById('femPhotoTargetInput')?.value || '').trim();
-      const authorName = (document.getElementById('femPhotoAuthorInput')?.value || '').trim();
       const imageUrl = state.femPhotoCompressedDataUrl;
 
       if (!imageUrl) {
@@ -1693,27 +2147,15 @@
         showToast('Scrivi una descrizione per la foto', 'error');
         return;
       }
-      if (!authorName) {
-        showToast('Inserisci il tuo nome', 'error');
-        return;
-      }
 
       const submitBtn = document.getElementById('btnSubmitFemPhoto');
       submitBtn.disabled = true;
       submitBtn.textContent = 'Pubblicazione...';
       try {
-        const deviceId = getDeviceId();
-        saveNickname(authorName);
-        const res = await fetch('/api/fem-photos', {
+        const data = await apiFetch('/api/fem-photos', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Device-Id': deviceId
-          },
-          body: JSON.stringify({ title, targetName, authorName, imageUrl, deviceId })
+          body: JSON.stringify({ title, targetName, imageUrl })
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `Errore ${res.status}`);
         if (Array.isArray(data.photos)) {
           state.femPhotos = data.photos;
           savePhotosBackup();
@@ -1727,6 +2169,33 @@
         submitBtn.disabled = false;
         submitBtn.textContent = 'Pubblica Foto';
       }
+    });
+
+    // Chat Composer
+    document.getElementById('chatComposerForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('chatMessageInput');
+      const btn = document.getElementById('btnSendChat');
+      const text = (input?.value || '').trim();
+      if (!text) return;
+      requireGoogleLogin(async () => {
+        if (btn) btn.disabled = true;
+        try {
+          const data = await apiFetch('/api/chat', {
+            method: 'POST',
+            body: JSON.stringify({ text })
+          });
+          if (input) input.value = '';
+          if (Array.isArray(data.messages)) {
+            state.chatMessages = data.messages;
+            renderChatMessages(true);
+          }
+        } catch (err) {
+          showToast(err.message || 'Errore invio messaggio', 'error');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      });
     });
 
     // Delegated Click Handler
@@ -1764,26 +2233,18 @@
       } else if (action === 'upvote-fem-photo') {
         const photoId = actionEl.getAttribute('data-photo-id');
         if (!photoId) return;
-        try {
-          const deviceId = getDeviceId();
-          const res = await fetch(`/api/fem-photos/${encodeURIComponent(photoId)}/upvote`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Device-Id': deviceId
-            },
-            body: JSON.stringify({ deviceId })
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(data.error || `Errore ${res.status}`);
-          if (Array.isArray(data.photos)) {
-            state.femPhotos = data.photos;
-            savePhotosBackup();
-            renderFemPhotosFeed();
+        requireGoogleLogin(async () => {
+          try {
+            const data = await apiFetch(`/api/fem-photos/${encodeURIComponent(photoId)}/upvote`, { method: 'POST' });
+            if (Array.isArray(data.photos)) {
+              state.femPhotos = data.photos;
+              savePhotosBackup();
+              renderFemPhotosFeed();
+            }
+          } catch (err) {
+            showToast(err.message || 'Errore voto foto', 'error');
           }
-        } catch (err) {
-          showToast(err.message || 'Errore voto foto', 'error');
-        }
+        });
       } else if (action === 'delete-fem-photo') {
         const photoId = actionEl.getAttribute('data-photo-id');
         if (!photoId) return;
@@ -1799,22 +2260,36 @@
           return;
         }
         try {
-          const deviceId = getDeviceId();
-          const res = await fetch(`/api/fem-photos/${encodeURIComponent(photoId)}`, {
-            method: 'DELETE',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Device-Id': deviceId
-            },
-            body: JSON.stringify({ deviceId })
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(data.error || `Errore ${res.status}`);
+          const data = await apiFetch(`/api/fem-photos/${encodeURIComponent(photoId)}`, { method: 'DELETE' });
           if (Array.isArray(data.photos)) {
             state.femPhotos = data.photos;
             savePhotosBackup();
             renderFemPhotosFeed();
             showToast('Foto eliminata', 'success');
+          }
+        } catch (err) {
+          showToast(err.message || 'Impossibile eliminare', 'error');
+        }
+      } else if (action === 'delete-chat-msg') {
+        const msgId = actionEl.getAttribute('data-msg-id');
+        if (!msgId) return;
+        if (actionEl.getAttribute('data-confirm-armed') !== 'true') {
+          actionEl.setAttribute('data-confirm-armed', 'true');
+          actionEl.textContent = 'Conferma?';
+          setTimeout(() => {
+            if (actionEl.isConnected && actionEl.getAttribute('data-confirm-armed') === 'true') {
+              actionEl.removeAttribute('data-confirm-armed');
+              actionEl.textContent = 'Elimina';
+            }
+          }, 3500);
+          return;
+        }
+        try {
+          const data = await apiFetch(`/api/chat/${encodeURIComponent(msgId)}`, { method: 'DELETE' });
+          if (Array.isArray(data.messages)) {
+            state.chatMessages = data.messages;
+            renderChatMessages(false);
+            showToast('Messaggio eliminato', 'success');
           }
         } catch (err) {
           showToast(err.message || 'Impossibile eliminare', 'error');
@@ -1838,11 +2313,26 @@
     }
   }
 
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    state.deferredInstallPrompt = e;
+    renderPwaInstallState();
+  });
+
+  window.addEventListener('appinstalled', () => {
+    state.deferredInstallPrompt = null;
+    renderPwaInstallState();
+    showToast('App Volley Ladispoli installata!');
+  });
+
   document.addEventListener('DOMContentLoaded', () => {
     initEvents();
     attachSheetDragPhysics();
     registerServiceWorker();
+    loadAppConfig();
+    loadAuthMe();
     loadAllFipavData(false);
     loadFemPhotos();
+    loadChatMessages(false);
   });
 })();

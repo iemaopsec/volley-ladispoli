@@ -55,7 +55,8 @@ const DEFAULT_DB = {
   users: {},
   videos: [],
   socks: [],
-  femPhotos: []
+  femPhotos: [],
+  chatMessages: []
 };
 
 const PHOTO_NAME_ALIASES = {
@@ -118,19 +119,53 @@ function getClaimedPlayersMap(db) {
   return claimed;
 }
 
-function serializeFemPhotos(list, deviceId = '', isAdmin = false) {
-  const did = String(deviceId || '').trim();
+function resolveSocialAuthor(item, db) {
+  const userObj = (item.authorId && db?.users) ? db.users[item.authorId] : null;
+  const linkedPid = userObj?.linkedPlayerId || item.authorPlayerId || '';
+  const linkedPlayer = (linkedPid && Array.isArray(db?.players))
+    ? db.players.find(p => p.id === linkedPid)
+    : null;
+  return {
+    authorName: userObj?.name || item.authorName || 'Squadra',
+    authorPicture: linkedPlayer?.avatarUrl || userObj?.picture || item.authorPicture || ''
+  };
+}
+
+function serializeFemPhotos(list, db, currentUser = null, isAdmin = false) {
+  const uid = currentUser ? currentUser.id : '';
   return (Array.isArray(list) ? list : []).map(item => {
     const upvotes = Array.isArray(item.upvotes) ? item.upvotes : [];
-    const canDelete = Boolean(isAdmin || (did && item.authorDeviceId && item.authorDeviceId === did));
+    const { authorName, authorPicture } = resolveSocialAuthor(item, db);
+    const canDelete = Boolean(isAdmin || (uid && item.authorId && item.authorId === uid));
     return {
       id: item.id,
       title: item.title || '',
       targetName: item.targetName || '',
       imageUrl: item.imageUrl || '',
-      authorName: item.authorName || 'Squadra',
+      authorId: item.authorId || '',
+      authorName,
+      authorPicture,
       upvotesCount: upvotes.length,
-      hasUpvoted: Boolean(did && upvotes.includes(did)),
+      hasUpvoted: Boolean(uid && upvotes.includes(uid)),
+      canDelete,
+      createdAt: item.createdAt || ''
+    };
+  });
+}
+
+function serializeChatMessages(list, db, currentUser = null, isAdmin = false) {
+  const uid = currentUser ? currentUser.id : '';
+  return (Array.isArray(list) ? list : []).map(item => {
+    const { authorName, authorPicture } = resolveSocialAuthor(item, db);
+    const isMine = Boolean(uid && item.authorId && item.authorId === uid);
+    const canDelete = Boolean(isAdmin || isMine);
+    return {
+      id: item.id,
+      text: item.text || '',
+      authorId: item.authorId || '',
+      authorName,
+      authorPicture,
+      isMine,
       canDelete,
       createdAt: item.createdAt || ''
     };
@@ -151,6 +186,7 @@ function normalizeDb(rawObj) {
   if (!db.videos || !Array.isArray(db.videos)) db.videos = [];
   if (!db.socks || !Array.isArray(db.socks)) db.socks = [];
   if (!db.femPhotos || !Array.isArray(db.femPhotos)) db.femPhotos = [];
+  if (!db.chatMessages || !Array.isArray(db.chatMessages)) db.chatMessages = [];
   if (!db.adminCode) db.adminCode = DEFAULT_DB.adminCode;
   attachProfilePhotos(db.players);
   return db;
@@ -970,7 +1006,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 401, { error: 'Accedi con Google per impostare la foto profilo' });
       }
       const body = await parseBody(req, 1.5 * 1024 * 1024);
-      const avatarUrl = String(body.avatarUrl || '').trim();
+      let avatarUrl = String(body.avatarUrl || '').trim();
 
       if (avatarUrl) {
         const isDataImage = /^data:image\/(jpeg|jpg|png|webp);base64,/i.test(avatarUrl);
@@ -980,6 +1016,14 @@ const server = http.createServer(async (req, res) => {
         }
         if (isDataImage && avatarUrl.length > 450 * 1024) {
           return sendJson(res, 400, { error: 'Foto profilo troppo pesante' });
+        }
+        if (isDataImage) {
+          try {
+            const cloudUrl = await uploadDataUriToCloudinary(avatarUrl, 'avatars');
+            if (cloudUrl) avatarUrl = cloudUrl;
+          } catch (err) {
+            console.warn('Cloudinary avatar upload fallback:', err.message);
+          }
         }
       }
 
@@ -1005,6 +1049,12 @@ const server = http.createServer(async (req, res) => {
       for (const s of db.socks) {
         if (s.authorId === user.id) s.authorPicture = user.picture;
       }
+      for (const fp of db.femPhotos) {
+        if (fp.authorId === user.id) fp.authorPicture = user.picture;
+      }
+      for (const cm of db.chatMessages) {
+        if (cm.authorId === user.id) cm.authorPicture = user.picture;
+      }
 
       await persistDb(db);
       return sendJson(res, 200, { user, players: db.players });
@@ -1019,6 +1069,8 @@ const server = http.createServer(async (req, res) => {
     // STATE
     if (pathname === '/api/state' && req.method === 'GET') {
       const db = await loadDb();
+      const currentUser = getCurrentUser(req, db);
+      const isAdmin = checkAdmin(req, {}, db);
       return sendJson(res, 200, {
         players: db.players,
         customReasons: db.customReasons,
@@ -1026,7 +1078,9 @@ const server = http.createServer(async (req, res) => {
         sandruProofs: db.sandruProofs,
         videos: db.videos,
         socks: db.socks,
-        currentUser: getCurrentUser(req, db),
+        femPhotos: serializeFemPhotos(db.femPhotos, db, currentUser, isAdmin),
+        chatMessages: serializeChatMessages(db.chatMessages, db, currentUser, isAdmin),
+        currentUser,
         claimedPlayers: getClaimedPlayersMap(db)
       });
     }
@@ -1490,30 +1544,30 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { socks: db.socks });
     }
 
-    // WOMEN'S FUNNY PHOTOS ("Foto divertenti" / "Spunnate")
+    // WOMEN'S PHOTOS ("Foto sputtananti") & SHARED TEAM CHAT
     if (pathname === '/api/fem-photos' && req.method === 'GET') {
       const db = await loadDb();
-      const deviceId = String(req.headers['x-device-id'] || '').trim().slice(0, 80);
+      const user = getCurrentUser(req, db);
       const isAdmin = checkAdmin(req, {}, db);
-      return sendJson(res, 200, { photos: serializeFemPhotos(db.femPhotos, deviceId, isAdmin) });
+      return sendJson(res, 200, { photos: serializeFemPhotos(db.femPhotos, db, user, isAdmin) });
     }
 
     if (pathname === '/api/fem-photos' && req.method === 'POST') {
       const db = await loadDb();
+      const user = getCurrentUser(req, db);
       const body = await parseBody(req, 2 * 1024 * 1024);
-      const deviceId = String(body.deviceId || req.headers['x-device-id'] || '').trim().slice(0, 80);
       const isAdmin = checkAdmin(req, body, db);
 
+      if (!user && !isAdmin) {
+        return sendJson(res, 401, { error: 'Accedi con Google per caricare una foto' });
+      }
+
       const title = String(body.title || '').trim().slice(0, 120);
-      const authorName = String(body.authorName || '').trim().slice(0, 50);
       const targetName = String(body.targetName || '').trim().slice(0, 50);
       const imageUrl = String(body.imageUrl || '').trim();
 
       if (!title) {
         return sendJson(res, 400, { error: 'Scrivi una descrizione per la foto' });
-      }
-      if (!authorName) {
-        return sendJson(res, 400, { error: 'Inserisci il tuo nome' });
       }
       if (!imageUrl) {
         return sendJson(res, 400, { error: 'Seleziona una foto da pubblicare' });
@@ -1543,62 +1597,123 @@ const server = http.createServer(async (req, res) => {
         title,
         targetName,
         imageUrl: finalImageUrl,
-        authorName,
-        authorDeviceId: deviceId,
-        upvotes: deviceId ? [deviceId] : [],
+        authorId: user ? user.id : 'admin',
+        authorName: user ? user.name : 'Admin',
+        authorPicture: user ? (user.picture || '') : '',
+        authorPlayerId: user ? (user.linkedPlayerId || '') : '',
+        upvotes: user ? [user.id] : [],
         createdAt: new Date().toISOString()
       };
 
       db.femPhotos.unshift(photo);
       await persistDb(db);
-      const serializedList = serializeFemPhotos(db.femPhotos, deviceId, isAdmin);
+      const serializedList = serializeFemPhotos(db.femPhotos, db, user, isAdmin);
       return sendJson(res, 201, { photo: serializedList[0], photos: serializedList });
     }
 
     if (pathname.startsWith('/api/fem-photos/') && pathname.endsWith('/upvote') && req.method === 'POST') {
       const db = await loadDb();
-      const body = await parseBody(req);
-      const deviceId = String(body.deviceId || req.headers['x-device-id'] || '').trim().slice(0, 80);
-      if (!deviceId) {
-        return sendJson(res, 400, { error: 'Identificativo dispositivo mancante' });
+      const user = getCurrentUser(req, db);
+      if (!user) {
+        return sendJson(res, 401, { error: 'Accedi con Google per votare' });
       }
-      const isAdmin = checkAdmin(req, body, db);
+      const isAdmin = checkAdmin(req, {}, db);
       const id = pathname.slice('/api/fem-photos/'.length, -'/upvote'.length);
       const photo = db.femPhotos.find(p => p.id === id);
       if (!photo) {
         return sendJson(res, 404, { error: 'Foto non trovata' });
       }
       if (!Array.isArray(photo.upvotes)) photo.upvotes = [];
-      const idx = photo.upvotes.indexOf(deviceId);
+      const idx = photo.upvotes.indexOf(user.id);
       if (idx === -1) {
-        photo.upvotes.push(deviceId);
+        photo.upvotes.push(user.id);
       } else {
         photo.upvotes.splice(idx, 1);
       }
       await persistDb(db);
       return sendJson(res, 200, {
-        photo: serializeFemPhotos([photo], deviceId, isAdmin)[0],
-        photos: serializeFemPhotos(db.femPhotos, deviceId, isAdmin)
+        photo: serializeFemPhotos([photo], db, user, isAdmin)[0],
+        photos: serializeFemPhotos(db.femPhotos, db, user, isAdmin)
       });
     }
 
     if (pathname.startsWith('/api/fem-photos/') && req.method === 'DELETE') {
       const db = await loadDb();
+      const user = getCurrentUser(req, db);
       const body = await parseBody(req);
-      const deviceId = String(body.deviceId || req.headers['x-device-id'] || '').trim().slice(0, 80);
       const isAdmin = checkAdmin(req, body, db);
       const id = pathname.slice('/api/fem-photos/'.length);
       const photo = db.femPhotos.find(p => p.id === id);
       if (!photo) {
         return sendJson(res, 404, { error: 'Foto non trovata' });
       }
-      const canDelete = Boolean(isAdmin || (deviceId && photo.authorDeviceId && photo.authorDeviceId === deviceId));
+      const canDelete = Boolean(isAdmin || (user && photo.authorId && photo.authorId === user.id));
       if (!canDelete) {
-        return sendJson(res, 401, { error: 'Puoi eliminare solo le foto caricate dal tuo telefono' });
+        return sendJson(res, 401, { error: 'Puoi eliminare solo le tue foto' });
       }
       db.femPhotos = db.femPhotos.filter(p => p.id !== id);
       await persistDb(db);
-      return sendJson(res, 200, { photos: serializeFemPhotos(db.femPhotos, deviceId, isAdmin) });
+      return sendJson(res, 200, { photos: serializeFemPhotos(db.femPhotos, db, user, isAdmin) });
+    }
+
+    // SHARED TEAM CHAT
+    if (pathname === '/api/chat' && req.method === 'GET') {
+      const db = await loadDb();
+      const user = getCurrentUser(req, db);
+      const isAdmin = checkAdmin(req, {}, db);
+      return sendJson(res, 200, { messages: serializeChatMessages(db.chatMessages, db, user, isAdmin) });
+    }
+
+    if (pathname === '/api/chat' && req.method === 'POST') {
+      const db = await loadDb();
+      const user = getCurrentUser(req, db);
+      const body = await parseBody(req);
+      const isAdmin = checkAdmin(req, body, db);
+      if (!user && !isAdmin) {
+        return sendJson(res, 401, { error: 'Accedi con Google per scrivere in chat' });
+      }
+      const text = String(body.text || '').trim().slice(0, 500);
+      if (!text) {
+        return sendJson(res, 400, { error: 'Scrivi un messaggio' });
+      }
+      const msg = {
+        id: 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        text,
+        authorId: user ? user.id : 'admin',
+        authorName: user ? user.name : 'Admin',
+        authorPicture: user ? (user.picture || '') : '',
+        authorPlayerId: user ? (user.linkedPlayerId || '') : '',
+        createdAt: new Date().toISOString()
+      };
+      db.chatMessages.push(msg);
+      if (db.chatMessages.length > 200) {
+        db.chatMessages = db.chatMessages.slice(-200);
+      }
+      await persistDb(db);
+      const serialized = serializeChatMessages(db.chatMessages, db, user, isAdmin);
+      return sendJson(res, 201, {
+        message: serialized[serialized.length - 1],
+        messages: serialized
+      });
+    }
+
+    if (pathname.startsWith('/api/chat/') && req.method === 'DELETE') {
+      const db = await loadDb();
+      const user = getCurrentUser(req, db);
+      const body = await parseBody(req);
+      const isAdmin = checkAdmin(req, body, db);
+      const id = pathname.slice('/api/chat/'.length);
+      const msg = db.chatMessages.find(m => m.id === id);
+      if (!msg) {
+        return sendJson(res, 404, { error: 'Messaggio non trovato' });
+      }
+      const canDelete = Boolean(isAdmin || (user && msg.authorId && msg.authorId === user.id));
+      if (!canDelete) {
+        return sendJson(res, 401, { error: 'Non autorizzato a eliminare questo messaggio' });
+      }
+      db.chatMessages = db.chatMessages.filter(m => m.id !== id);
+      await persistDb(db);
+      return sendJson(res, 200, { messages: serializeChatMessages(db.chatMessages, db, user, isAdmin) });
     }
 
     // MEDIA UPLOADS (Cloudinary signature + local fallback <= 15MB)

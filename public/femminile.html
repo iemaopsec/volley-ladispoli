@@ -18,6 +18,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="VL Femminile" />
   <link rel="stylesheet" href="/styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <!-- TOP NAVIGATION BAR (MINIMAL 56PX) -->
@@ -41,12 +42,15 @@
           <span>Condividi</span>
         </button>
 
-        <button id="btnRefreshTop" class="icon-pill-btn" type="button" aria-label="Aggiorna dati FIPAV">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
-            <polyline points="21 3 21 9 15 9"/>
+        <button id="btnAccountToggle" class="account-pill" type="button" aria-label="Account Google">
+          <span id="accountPillAvatar" class="account-pill-avatar hidden"></span>
+          <svg id="accountGoogleIcon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"/>
+            <path fill="#34A853" d="M12 24c3.3 0 6.08-1.09 8.11-2.96l-3.88-3.05c-1.09.73-2.49 1.16-4.23 1.16-3.25 0-6.01-2.19-7-5.14H1.01v3.14C3.03 21.17 7.19 24 12 24Z"/>
+            <path fill="#FBBC05" d="M5 14.01c-.25-.73-.39-1.52-.39-2.33 0-.81.14-1.6.39-2.33V6.21H1.01C.37 7.49 0 8.95 0 11.68s.37 4.19 1.01 5.47l3.99-3.14Z"/>
+            <path fill="#EA4335" d="M12 4.75c1.79 0 3.4.62 4.67 1.83l3.5-3.5C18.08 1.14 15.3 0 12 0 7.19 0 3.03 2.83 1.01 6.87l3.99 3.14c.99-2.95 3.75-5.26 7-5.26Z"/>
           </svg>
-          <span>Aggiorna</span>
+          <span id="accountPillLabel">Accedi</span>
         </button>
       </div>
     </div>
@@ -210,13 +214,37 @@
       <div id="femPhotosGrid" class="socks-grid"></div>
     </section>
 
+    <!-- ==========================================
+         VIEW 4: CHAT VOLLEY LADISPOLI
+         ========================================== -->
+    <section id="view-chat" class="view-panel" role="tabpanel">
+      <div class="media-section-bar">
+        <div>
+          <h2 class="media-heading">Chat Volley Ladispoli</h2>
+          <p class="media-sub">Chat condivisa tra le squadre</p>
+        </div>
+      </div>
+
+      <div class="chat-shell">
+        <div id="chatMessagesList" class="chat-messages-list"></div>
+        <form id="chatComposerForm" class="chat-composer hidden">
+          <input type="text" id="chatMessageInput" class="chat-input" maxlength="500" placeholder="Scrivi un messaggio..." autocomplete="off" />
+          <button type="submit" id="btnSendChat" class="chat-send-btn">Invia</button>
+        </form>
+        <div id="chatLoginPrompt" class="chat-login-bar">
+          <span>Accedi con Google per scrivere in chat</span>
+          <button type="button" id="btnChatLogin" class="btn-small-primary">Accedi</button>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <!-- ==========================================
-       BOTTOM TAB BAR (3 TABS)
+       BOTTOM TAB BAR (4 TABS)
        ========================================== -->
   <nav class="bottom-bar" aria-label="Navigazione principale">
-    <div class="bottom-bar-inner bottom-bar-three-tabs">
+    <div class="bottom-bar-inner bottom-bar-four-tabs">
       <button type="button" class="nav-tab active" data-view="calendario">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/>
@@ -236,6 +264,13 @@
           <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>
         </svg>
         <span>Foto</span>
+      </button>
+
+      <button type="button" class="nav-tab" data-view="chat">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        <span>Chat</span>
       </button>
     </div>
   </nav>
@@ -293,16 +328,78 @@
           <input type="text" id="femPhotoTargetInput" class="field-input" maxlength="50" placeholder="Es. Giulia" />
         </div>
 
-        <div class="field-block">
-          <label for="femPhotoAuthorInput" class="field-label">Caricata da</label>
-          <input type="text" id="femPhotoAuthorInput" class="field-input" maxlength="50" placeholder="Il tuo nome" required />
-        </div>
-
         <div class="sheet-footer-actions">
           <button type="button" class="btn-secondary-half" data-close="sheetUploadFemPhoto">Annulla</button>
           <button type="submit" id="btnSubmitFemPhoto" class="btn-primary-half">Pubblica Foto</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ==========================================
+       GOOGLE ACCOUNT SHEET
+       ========================================== -->
+  <div id="sheetAccount" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheetAccountTitle">
+    <div class="bottom-sheet" data-sheet="sheetAccount">
+      <div class="sheet-grabber-area"><div class="sheet-grabber"></div></div>
+      <div class="sheet-header">
+        <div>
+          <h3 id="sheetAccountTitle" class="sheet-title">Profilo Squadra</h3>
+          <p id="sheetAccountSubtitle" class="sheet-subtitle">Accedi con Google per foto sputtananti, voti e chat</p>
+        </div>
+        <button type="button" class="sheet-close-btn" data-close="sheetAccount" aria-label="Chiudi">✕</button>
+      </div>
+
+      <div class="sheet-body">
+        <div id="accountLoggedOutPanel">
+          <div class="account-intro-card">
+            <p class="account-intro-text">
+              Accedi con Google per caricare foto sputtananti, votare e scrivere in chat con tutte le squadre del Volley Ladispoli.
+            </p>
+            <div id="googleSignInBtnContainer" class="google-btn-wrap"></div>
+            <div id="googleConfigMissingNote" class="setup-hint-box hidden">
+              Per attivare il login con Google su questo sito imposta la variabile <code>GOOGLE_CLIENT_ID</code> su Render.
+            </div>
+          </div>
+        </div>
+
+        <div id="accountLoggedInPanel" class="hidden">
+          <div class="account-user-header">
+            <div class="account-avatar-edit-wrap">
+              <button type="button" id="accountAvatarZoomBtn" class="account-avatar-zoom-btn" title="Ingrandisci foto profilo" aria-label="Ingrandisci foto profilo">
+                <img id="accountUserAvatar" src="/logo-ladispoli.jpg" alt="" class="account-user-avatar" />
+              </button>
+              <label for="accountAvatarInput" class="account-avatar-badge" title="Cambia foto profilo" aria-label="Cambia foto profilo">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+              </label>
+            </div>
+            <div style="min-width:0; flex:1;">
+              <div id="accountUserName" class="account-user-name">Giocatrice</div>
+              <div id="accountUserEmail" class="account-user-email"></div>
+            </div>
+          </div>
+
+          <div class="account-avatar-actions">
+            <input type="file" id="accountAvatarInput" accept="image/*" class="hidden-file-input" />
+            <label for="accountAvatarInput" id="btnUploadAccountAvatar" class="btn-small-secondary">Cambia foto profilo</label>
+            <button type="button" id="btnResetAccountAvatar" class="text-action-btn hidden">Ripristina foto Google</button>
+          </div>
+
+          <div id="accountUserStats" class="account-stats-grid"></div>
+
+          <button type="button" id="btnLogoutGoogle" class="btn-danger-outline" style="margin-top: 0.75rem;">
+            Esci dall'account Google
+          </button>
+        </div>
+
+        <div id="pwaInstallRow" class="pwa-install-box" style="margin-top: 1rem;">
+          <div class="pwa-install-info">
+            <strong>Installa App sul Telefono</strong>
+            <span id="pwaInstallHint">Aggiungi Volley Ladispoli alla schermata Home per aprirla a schermo intero.</span>
+          </div>
+          <button type="button" id="btnPwaInstall" class="btn-small-primary hidden">Installa</button>
+        </div>
+      </div>
     </div>
   </div>
 

@@ -79,6 +79,8 @@
     sandruProofs: [],
     videos: [],
     socks: [],
+    femPhotos: [],
+    chatMessages: [],
     currentUser: null,
     claimedPlayers: {},
     appConfig: {
@@ -104,9 +106,13 @@
       receiptFileName: '',
       serverError: ''
     },
-    // Media & Socks
-    mediaTab: 'funny', // 'funny' | 'match' | 'socks'
+    // Media, Socks, Shared Photos & Chat
+    mediaTab: 'funny', // 'funny' | 'match' | 'socks' | 'fem-photos' | 'chat'
     sockSort: 'top',   // 'top' | 'recent'
+    femPhotoSort: 'top', // 'top' | 'recent'
+    femPhotoCompressedDataUrl: '',
+    activeView: 'paste',
+    chatPollTimer: null,
     videoUploadSource: 'link', // 'link' | 'file'
     sockCompressedDataUrl: '',
     sockRawFile: null,
@@ -303,6 +309,8 @@
       state.sandruProofs = data.sandruProofs || [];
       state.videos = data.videos || [];
       state.socks = data.socks || [];
+      state.femPhotos = data.femPhotos || [];
+      state.chatMessages = data.chatMessages || [];
       state.currentUser = data.currentUser || null;
       state.claimedPlayers = data.claimedPlayers || {};
       saveLocalBackup();
@@ -2304,6 +2312,7 @@
       if (res.claimedPlayers) state.claimedPlayers = res.claimedPlayers;
       updateAccountChrome();
       closeSheet('sheetAccount');
+      await Promise.all([loadFemPhotos(), loadChatMessages(state.activeView === 'media' && state.mediaTab === 'chat')]);
       renderMediaView();
       showToast(`Benvenuto, ${(res.user.name || '').split(' ')[0]}!`);
 
@@ -2478,14 +2487,33 @@
   function renderMediaView() {
     const vidPane = document.getElementById('mediaVideosPane');
     const sockPane = document.getElementById('mediaSocksPane');
+    const femPane = document.getElementById('mediaFemPhotosPane');
+    const chatPane = document.getElementById('mediaChatPane');
     if (!vidPane || !sockPane) return;
 
+    vidPane.classList.add('hidden');
+    sockPane.classList.add('hidden');
+    femPane?.classList.add('hidden');
+    chatPane?.classList.add('hidden');
+
     if (state.mediaTab === 'socks') {
-      vidPane.classList.add('hidden');
+      stopChatPolling();
       sockPane.classList.remove('hidden');
       renderSocksFeed();
+    } else if (state.mediaTab === 'fem-photos') {
+      stopChatPolling();
+      femPane?.classList.remove('hidden');
+      renderFemPhotosFeed();
+    } else if (state.mediaTab === 'chat') {
+      chatPane?.classList.remove('hidden');
+      renderChatComposerState();
+      renderChatMessages(true);
+      loadChatMessages(false);
+      if (state.activeView === 'media') {
+        startChatPolling();
+      }
     } else {
-      sockPane.classList.add('hidden');
+      stopChatPolling();
       vidPane.classList.remove('hidden');
       const heading = document.getElementById('mediaVideosHeading');
       const sub = document.getElementById('mediaVideosSub');
@@ -2497,6 +2525,242 @@
         sub.textContent = 'Momenti dello spogliatoio da Drive, YouTube, Reels o MP4';
       }
       renderVideosFeed();
+    }
+  }
+
+  async function loadFemPhotos() {
+    try {
+      const data = await apiFetch('/api/fem-photos', { cache: 'no-store' });
+      if (Array.isArray(data.photos)) {
+        state.femPhotos = data.photos;
+        renderFemPhotosFeed();
+      }
+    } catch (_) {}
+  }
+
+  function renderFemPhotoAuthorHtml(p) {
+    const name = p.authorName || 'Squadra';
+    const timeStr = formatRelativeTime(p.createdAt);
+    const avatarHtml = p.authorPicture
+      ? `<img src="${escapeHtml(p.authorPicture)}" alt="${escapeHtml(name)}" class="fem-photo-avatar is-zoomable" data-action="open-lightbox" data-img-url="${escapeHtml(p.authorPicture)}" data-caption="${escapeHtml(name)}" loading="lazy" />`
+      : `<div class="fem-photo-avatar">${escapeHtml(getInitials(name))}</div>`;
+    return `
+      <div class="fem-photo-author">
+        ${avatarHtml}
+        <div class="sock-meta" style="margin:0;">${escapeHtml(name)} · ${escapeHtml(timeStr)}</div>
+      </div>
+    `;
+  }
+
+  function renderFemPhotosFeed() {
+    const gridEl = document.getElementById('femPhotosGrid');
+    const sortBtn = document.getElementById('btnFemPhotoSortToggle');
+    if (sortBtn) {
+      sortBtn.textContent = state.femPhotoSort === 'top' ? 'Più votate' : 'Più recenti';
+    }
+    if (!gridEl) return;
+
+    const items = [...(state.femPhotos || [])];
+    if (state.femPhotoSort === 'top') {
+      items.sort((a, b) => {
+        const diff = (b.upvotesCount || 0) - (a.upvotesCount || 0);
+        if (diff !== 0) return diff;
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      });
+    } else {
+      items.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    }
+
+    if (items.length === 0) {
+      gridEl.innerHTML = `
+        <div class="media-empty-card" style="grid-column: 1 / -1;">
+          <div>Nessuna foto caricata.</div>
+          <button type="button" class="btn-small-primary" data-action="open-upload-fem-photo">
+            + Carica foto
+          </button>
+        </div>
+      `;
+      return;
+    }
+
+    const rankedIds = [...items]
+      .sort((a, b) => {
+        const diff = (b.upvotesCount || 0) - (a.upvotesCount || 0);
+        if (diff !== 0) return diff;
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      })
+      .map(p => p.id);
+
+    gridEl.innerHTML = items.map(p => {
+      const rankNum = rankedIds.indexOf(p.id) + 1;
+      const rankCls = rankNum <= 3 ? `rank-${rankNum}` : '';
+      const medal = `#${rankNum}`;
+      const caption = p.targetName ? `${p.title} (${p.targetName})` : p.title;
+      const canDel = Boolean(state.isAdmin || p.canDelete);
+
+      return `
+        <article class="sock-card">
+          <span class="sock-rank-badge ${rankCls}">${medal}</span>
+          <button type="button" class="sock-photo-btn" data-action="open-lightbox" data-img-url="${escapeHtml(p.imageUrl)}" data-caption="${escapeHtml(caption)}">
+            <img src="${escapeHtml(p.imageUrl)}" alt="${escapeHtml(p.title)}" class="sock-photo-img" loading="lazy" />
+          </button>
+          <div class="sock-card-body">
+            <div>
+              <div class="sock-title">${escapeHtml(p.title)}</div>
+              ${p.targetName ? `<span class="fem-target-pill">${escapeHtml(p.targetName)}</span>` : ''}
+              ${renderFemPhotoAuthorHtml(p)}
+            </div>
+            <div class="sock-actions-row">
+              <button type="button" class="upvote-btn ${p.hasUpvoted ? 'is-upvoted' : ''}" data-action="upvote-fem-photo" data-photo-id="${escapeHtml(p.id)}">
+                <span>▲</span>
+                <span>${p.upvotesCount || 0}</span>
+              </button>
+              ${canDel ? `<button type="button" class="text-action-btn" style="color:var(--accent-red); font-size:0.75rem;" data-action="delete-fem-photo" data-photo-id="${escapeHtml(p.id)}">Elimina</button>` : ''}
+            </div>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function openUploadFemPhotoSheet() {
+    requireGoogleLogin(() => {
+      state.femPhotoCompressedDataUrl = '';
+      const form = document.getElementById('formUploadFemPhoto');
+      if (form) form.reset();
+      document.getElementById('femPhotoPreviewWrap')?.classList.add('hidden');
+      const dropLabel = document.getElementById('femPhotoDropLabel');
+      if (dropLabel) dropLabel.textContent = 'Tocca per scegliere o scattare la foto';
+
+      const submitBtn = document.getElementById('btnSubmitFemPhoto');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Pubblica Foto';
+      }
+      openSheet('sheetUploadFemPhoto');
+    }, true);
+  }
+
+  function formatChatDayLabel(iso) {
+    if (!iso) return '';
+    try {
+      const dt = new Date(iso);
+      const today = new Date();
+      const dtMid = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+      const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+      const diffDays = Math.round((todayMid - dtMid) / 86400000);
+      if (diffDays === 0) return 'Oggi';
+      if (diffDays === 1) return 'Ieri';
+      return dt.toLocaleDateString('it-IT', { day: '2-digit', month: 'short' });
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function formatChatTime(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function renderChatComposerState() {
+    const form = document.getElementById('chatComposerForm');
+    const prompt = document.getElementById('chatLoginPrompt');
+    if (!form || !prompt) return;
+    const canWrite = Boolean(state.currentUser || state.isAdmin);
+    form.classList.toggle('hidden', !canWrite);
+    prompt.classList.toggle('hidden', canWrite);
+  }
+
+  function renderChatMessages(forceScrollBottom = false) {
+    const listEl = document.getElementById('chatMessagesList');
+    if (!listEl) return;
+
+    const wasNearBottom = (listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight) < 90;
+    const msgs = state.chatMessages || [];
+
+    if (msgs.length === 0) {
+      listEl.innerHTML = `
+        <div class="media-empty-card" style="border:none; background:transparent;">
+          <div>Nessun messaggio ancora. Scrivi il primo!</div>
+        </div>
+      `;
+      return;
+    }
+
+    let lastDay = '';
+    const htmlParts = [];
+    for (const m of msgs) {
+      const dayLabel = formatChatDayLabel(m.createdAt);
+      if (dayLabel && dayLabel !== lastDay) {
+        lastDay = dayLabel;
+        htmlParts.push(`<div class="chat-date-divider">${escapeHtml(dayLabel)}</div>`);
+      }
+
+      const name = m.authorName || 'Squadra';
+      const avatarHtml = m.authorPicture
+        ? `<img src="${escapeHtml(m.authorPicture)}" alt="${escapeHtml(name)}" class="chat-avatar is-zoomable" data-action="open-lightbox" data-img-url="${escapeHtml(m.authorPicture)}" data-caption="${escapeHtml(name)}" loading="lazy" />`
+        : `<div class="chat-avatar">${escapeHtml(getInitials(name))}</div>`;
+
+      const timeStr = formatChatTime(m.createdAt);
+      const canDel = Boolean(state.isAdmin || m.canDelete);
+      const delHtml = canDel
+        ? `<button type="button" class="chat-delete-btn" data-action="delete-chat-msg" data-msg-id="${escapeHtml(m.id)}">Elimina</button>`
+        : '';
+
+      htmlParts.push(`
+        <div class="chat-msg-row ${m.isMine ? 'is-mine' : ''}">
+          ${avatarHtml}
+          <div class="chat-msg-col">
+            <div class="chat-msg-meta">
+              ${m.isMine ? '' : `<strong>${escapeHtml(name)}</strong>`}
+              <span>${escapeHtml(timeStr)}</span>
+              ${delHtml}
+            </div>
+            <div class="chat-bubble">${escapeHtml(m.text)}</div>
+          </div>
+        </div>
+      `);
+    }
+
+    listEl.innerHTML = htmlParts.join('');
+    if (forceScrollBottom || wasNearBottom) {
+      listEl.scrollTop = listEl.scrollHeight;
+    }
+  }
+
+  async function loadChatMessages(forceScrollBottom = false) {
+    try {
+      const data = await apiFetch('/api/chat', { cache: 'no-store' });
+      if (Array.isArray(data.messages)) {
+        const prevLast = state.chatMessages[state.chatMessages.length - 1]?.id || '';
+        const prevLen = state.chatMessages.length;
+        state.chatMessages = data.messages;
+        const nextLast = data.messages[data.messages.length - 1]?.id || '';
+        const changed = prevLen !== data.messages.length || prevLast !== nextLast;
+        if (state.mediaTab === 'chat') {
+          renderChatMessages(forceScrollBottom || changed);
+        }
+      }
+    } catch (_) {}
+  }
+
+  function startChatPolling() {
+    if (state.chatPollTimer) return;
+    state.chatPollTimer = setInterval(() => {
+      if (state.activeView === 'media' && state.mediaTab === 'chat' && document.visibilityState === 'visible') {
+        loadChatMessages(false);
+      }
+    }, 4000);
+  }
+
+  function stopChatPolling() {
+    if (state.chatPollTimer) {
+      clearInterval(state.chatPollTimer);
+      state.chatPollTimer = null;
     }
   }
 
@@ -2930,10 +3194,26 @@
     document.querySelectorAll('.nav-tab').forEach(tab => {
       tab.addEventListener('click', () => {
         const viewName = tab.getAttribute('data-view');
+        state.activeView = viewName;
         document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t === tab));
         document.querySelectorAll('.view-panel').forEach(p => p.classList.toggle('active', p.id === `view-${viewName}`));
+        if (viewName === 'media' && state.mediaTab === 'chat') {
+          loadChatMessages(true);
+          startChatPolling();
+        } else {
+          stopChatPolling();
+        }
         window.scrollTo({ top: 0, behavior: 'smooth' });
       });
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && state.activeView === 'media' && state.mediaTab === 'chat') {
+        loadChatMessages(false);
+        startChatPolling();
+      } else if (document.visibilityState !== 'visible') {
+        stopChatPolling();
+      }
     });
 
     // Bottom Bar "+ Segna" Button
@@ -2977,6 +3257,8 @@
         updateAccountChrome();
         populateAccountSheet();
         renderPasteView();
+        loadFemPhotos();
+        loadChatMessages(false);
         renderMediaView();
         showToast('Foto profilo aggiornata!', 'success');
       } catch (err) {
@@ -2998,6 +3280,8 @@
         updateAccountChrome();
         populateAccountSheet();
         renderPasteView();
+        loadFemPhotos();
+        loadChatMessages(false);
         renderMediaView();
         showToast('Ripristinata foto Google');
       } catch (err) {
@@ -3038,6 +3322,7 @@
       state.currentUser = null;
       updateAccountChrome();
       closeSheet('sheetAccount');
+      await Promise.all([loadFemPhotos(), loadChatMessages(false)]);
       renderMediaView();
       showToast('Uscito dall\'account Google');
     });
@@ -3472,6 +3757,99 @@
 
     document.getElementById('btnOpenUploadVideo').addEventListener('click', openUploadVideoSheet);
     document.getElementById('btnOpenUploadSock').addEventListener('click', openUploadSockSheet);
+    document.getElementById('btnOpenUploadFemPhoto')?.addEventListener('click', openUploadFemPhotoSheet);
+    document.getElementById('btnChatLogin')?.addEventListener('click', () => openAccountSheet());
+
+    document.getElementById('btnFemPhotoSortToggle')?.addEventListener('click', () => {
+      state.femPhotoSort = state.femPhotoSort === 'top' ? 'recent' : 'top';
+      renderFemPhotosFeed();
+    });
+
+    document.getElementById('femPhotoInput')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      if (!/^image\//i.test(file.type || '') && !/\.(jpg|jpeg|png|webp|heic|heif)$/i.test(file.name || '')) {
+        showToast('Seleziona un file immagine valido', 'error');
+        e.target.value = '';
+        return;
+      }
+      const lbl = document.getElementById('femPhotoDropLabel');
+      if (lbl) lbl.textContent = 'Ottimizzazione foto...';
+      try {
+        const compressed = await compressImageToJpeg(file, 960, 0.78, 320 * 1024);
+        state.femPhotoCompressedDataUrl = compressed.dataUrl;
+        const previewImg = document.getElementById('femPhotoPreviewImg');
+        if (previewImg) previewImg.src = compressed.dataUrl;
+        document.getElementById('femPhotoPreviewWrap')?.classList.remove('hidden');
+        if (lbl) lbl.textContent = 'Foto pronta! Tocca per cambiare';
+      } catch (err) {
+        if (lbl) lbl.textContent = 'Tocca per scegliere o scattare la foto';
+        showToast(err.message || 'Errore lettura immagine', 'error');
+      }
+    });
+
+    document.getElementById('formUploadFemPhoto')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const title = (document.getElementById('femPhotoTitleInput')?.value || '').trim();
+      const targetName = (document.getElementById('femPhotoTargetInput')?.value || '').trim();
+      const imageUrl = state.femPhotoCompressedDataUrl;
+
+      if (!imageUrl) {
+        showToast('Scegli o scatta prima una foto!', 'error');
+        return;
+      }
+      if (!title) {
+        showToast('Scrivi una descrizione per la foto', 'error');
+        return;
+      }
+
+      const submitBtn = document.getElementById('btnSubmitFemPhoto');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Pubblicazione...';
+      try {
+        const res = await apiFetch('/api/fem-photos', {
+          method: 'POST',
+          body: JSON.stringify({ title, targetName, imageUrl })
+        });
+        if (Array.isArray(res.photos)) {
+          state.femPhotos = res.photos;
+          renderFemPhotosFeed();
+        }
+        closeSheet('sheetUploadFemPhoto');
+        showToast('Foto pubblicata!', 'success');
+      } catch (err) {
+        showToast(err.message || 'Errore pubblicazione foto', 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Pubblica Foto';
+      }
+    });
+
+    document.getElementById('chatComposerForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('chatMessageInput');
+      const btn = document.getElementById('btnSendChat');
+      const text = (input?.value || '').trim();
+      if (!text) return;
+      requireGoogleLogin(async () => {
+        if (btn) btn.disabled = true;
+        try {
+          const res = await apiFetch('/api/chat', {
+            method: 'POST',
+            body: JSON.stringify({ text })
+          });
+          if (input) input.value = '';
+          if (Array.isArray(res.messages)) {
+            state.chatMessages = res.messages;
+            renderChatMessages(true);
+          }
+        } catch (err) {
+          showToast(err.message || 'Errore invio messaggio', 'error');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      }, true);
+    });
 
     const btnSockSort = document.getElementById('btnSockSortToggle');
     btnSockSort.addEventListener('click', () => {
@@ -3886,6 +4264,90 @@
             showToast(err.message || 'Errore scollegamento', 'error');
           }
         });
+      } else if (action === 'open-upload-fem-photo') {
+        openUploadFemPhotoSheet();
+      } else if (action === 'upvote-fem-photo') {
+        const photoId = actionEl.getAttribute('data-photo-id');
+        if (!photoId) return;
+        requireGoogleLogin(async () => {
+          try {
+            const res = await apiFetch(`/api/fem-photos/${encodeURIComponent(photoId)}/upvote`, { method: 'POST' });
+            if (Array.isArray(res.photos)) {
+              state.femPhotos = res.photos;
+              renderFemPhotosFeed();
+            }
+          } catch (err) {
+            showToast(err.message || 'Errore voto foto', 'error');
+          }
+        });
+      } else if (action === 'delete-fem-photo') {
+        const photoId = actionEl.getAttribute('data-photo-id');
+        if (!photoId) return;
+        if (actionEl.getAttribute('data-confirm-armed') !== 'true') {
+          actionEl.setAttribute('data-confirm-armed', 'true');
+          actionEl.textContent = 'Conferma?';
+          setTimeout(() => {
+            if (actionEl.isConnected && actionEl.getAttribute('data-confirm-armed') === 'true') {
+              actionEl.removeAttribute('data-confirm-armed');
+              actionEl.textContent = 'Elimina';
+            }
+          }, 3500);
+          return;
+        }
+        const doDeletePhoto = async (code = '') => {
+          try {
+            const res = await apiFetch(`/api/fem-photos/${encodeURIComponent(photoId)}`, {
+              method: 'DELETE',
+              body: JSON.stringify({ adminCode: code || state.adminCode })
+            });
+            if (Array.isArray(res.photos)) {
+              state.femPhotos = res.photos;
+              renderFemPhotosFeed();
+              showToast('Foto eliminata', 'success');
+            }
+          } catch (err) {
+            showToast(err.message || 'Impossibile eliminare', 'error');
+          }
+        };
+        if (state.currentUser || state.isAdmin) {
+          doDeletePhoto();
+        } else {
+          ensureAdminOrPrompt(doDeletePhoto);
+        }
+      } else if (action === 'delete-chat-msg') {
+        const msgId = actionEl.getAttribute('data-msg-id');
+        if (!msgId) return;
+        if (actionEl.getAttribute('data-confirm-armed') !== 'true') {
+          actionEl.setAttribute('data-confirm-armed', 'true');
+          actionEl.textContent = 'Conferma?';
+          setTimeout(() => {
+            if (actionEl.isConnected && actionEl.getAttribute('data-confirm-armed') === 'true') {
+              actionEl.removeAttribute('data-confirm-armed');
+              actionEl.textContent = 'Elimina';
+            }
+          }, 3500);
+          return;
+        }
+        const doDeleteMsg = async (code = '') => {
+          try {
+            const res = await apiFetch(`/api/chat/${encodeURIComponent(msgId)}`, {
+              method: 'DELETE',
+              body: JSON.stringify({ adminCode: code || state.adminCode })
+            });
+            if (Array.isArray(res.messages)) {
+              state.chatMessages = res.messages;
+              renderChatMessages(false);
+              showToast('Messaggio eliminato', 'success');
+            }
+          } catch (err) {
+            showToast(err.message || 'Impossibile eliminare', 'error');
+          }
+        };
+        if (state.currentUser || state.isAdmin) {
+          doDeleteMsg();
+        } else {
+          ensureAdminOrPrompt(doDeleteMsg);
+        }
       } else if (action === 'open-lightbox') {
         e.stopPropagation();
         e.preventDefault();
