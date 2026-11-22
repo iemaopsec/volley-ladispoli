@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Volley Ladispoli · 2ª Divisione Femminile &amp; Under 19</title>
-  <meta name="description" content="Calendario partite 2ª Divisione Femminile e Under 19 Girone A, classifiche ufficiali FIPAV (64591 e 64854) e foto divertenti A.S.D. Volley Ladispoli." />
+  <meta name="description" content="Calendario partite 2ª Divisione Femminile e Under 19 Girone A, classifiche ufficiali FIPAV (64591 e 64854) e foto sputtananti A.S.D. Volley Ladispoli." />
   <meta property="og:title" content="Volley Ladispoli · 2ª Divisione &amp; Under 19 Femminile" />
-  <meta property="og:description" content="Calendari separati o uniti, orari, palestre con Google Maps, classifiche ufficiali FIPAV e foto divertenti dello spogliatoio." />
+  <meta property="og:description" content="Calendari separati o uniti, orari, palestre con Google Maps, classifiche ufficiali FIPAV e foto sputtananti della squadra." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="https://volley-ladispoli-paste.onrender.com/icon-512.png" />
   <meta name="theme-color" content="#f5f5f7" />
@@ -194,13 +194,13 @@
     </section>
 
     <!-- ==========================================
-         VIEW 3: FOTO DIVERTENTI ("SPUNNATE")
+         VIEW 3: FOTO SPUTTANANTI
          ========================================== -->
     <section id="view-foto" class="view-panel" role="tabpanel">
       <div class="media-section-bar">
         <div>
-          <h2 class="media-heading">Foto divertenti 😂</h2>
-          <p class="media-sub">Spunnate, perle dallo spogliatoio e classifica upvote</p>
+          <h2 class="media-heading">Foto sputtananti</h2>
+          <p class="media-sub">Carica le foto della squadra e vota</p>
         </div>
         <div style="display:flex; align-items:center; gap:0.5rem;">
           <button type="button" id="btnFemPhotoSortToggle" class="text-action-btn">Più votate</button>
@@ -235,7 +235,7 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>
         </svg>
-        <span>Foto 😂</span>
+        <span>Foto</span>
       </button>
     </div>
   </nav>
@@ -258,15 +258,15 @@
   </div>
 
   <!-- ==========================================
-       UPLOAD FUNNY PHOTO BOTTOM SHEET
+       UPLOAD PHOTO BOTTOM SHEET
        ========================================== -->
   <div id="sheetUploadFemPhoto" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheetUploadFemPhotoTitle">
     <div class="bottom-sheet" data-sheet="sheetUploadFemPhoto">
       <div class="sheet-grabber-area"><div class="sheet-grabber"></div></div>
       <div class="sheet-header">
         <div>
-          <h3 id="sheetUploadFemPhotoTitle" class="sheet-title">Carica Foto Divertente 😂</h3>
-          <p class="sheet-subtitle">Spunna una compagna e fai votare la squadra</p>
+          <h3 id="sheetUploadFemPhotoTitle" class="sheet-title">Carica foto sputtanante</h3>
+          <p class="sheet-subtitle">Scegli una foto e aggiungila alla galleria</p>
         </div>
         <button type="button" class="sheet-close-btn" data-close="sheetUploadFemPhoto" aria-label="Chiudi">✕</button>
       </div>
@@ -279,23 +279,23 @@
             <input type="file" id="femPhotoInput" accept="image/*" class="hidden-file-input" />
           </label>
           <div id="femPhotoPreviewWrap" class="sock-preview-wrap hidden">
-            <img id="femPhotoPreviewImg" src="" alt="Anteprima foto divertente" class="sock-preview-img" />
+            <img id="femPhotoPreviewImg" src="" alt="Anteprima foto" class="sock-preview-img" />
           </div>
         </div>
 
         <div class="field-block">
-          <label for="femPhotoTitleInput" class="field-label">Didascalia / Battuta</label>
-          <input type="text" id="femPhotoTitleInput" class="field-input" maxlength="120" placeholder="Es. Quando parte il pallonetto al 3° set 😂" required />
+          <label for="femPhotoTitleInput" class="field-label">Descrizione</label>
+          <input type="text" id="femPhotoTitleInput" class="field-input" maxlength="120" placeholder="Es. Dopo la partita di domenica" required />
         </div>
 
         <div class="field-block">
-          <label for="femPhotoTargetInput" class="field-label">Chi viene spunnata? (opzionale)</label>
-          <input type="text" id="femPhotoTargetInput" class="field-input" maxlength="50" placeholder="Es. Giulia, Chiara..." />
+          <label for="femPhotoTargetInput" class="field-label">Chi c'è nella foto? (opzionale)</label>
+          <input type="text" id="femPhotoTargetInput" class="field-input" maxlength="50" placeholder="Es. Giulia" />
         </div>
 
         <div class="field-block">
-          <label for="femPhotoAuthorInput" class="field-label">Il tuo nome</label>
-          <input type="text" id="femPhotoAuthorInput" class="field-input" maxlength="50" placeholder="Es. Sara" required />
+          <label for="femPhotoAuthorInput" class="field-label">Caricata da</label>
+          <input type="text" id="femPhotoAuthorInput" class="field-input" maxlength="50" placeholder="Il tuo nome" required />
         </div>
 
         <div class="sheet-footer-actions">

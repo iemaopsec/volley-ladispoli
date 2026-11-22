@@ -245,6 +245,39 @@ function isGistEnabled() {
   return Boolean(GITHUB_GIST_ID && GITHUB_TOKEN);
 }
 
+async function uploadDataUriToCloudinary(dataUri, subFolder = 'fem-photos') {
+  const cloudName = (process.env.CLOUDINARY_CLOUD_NAME || '').trim();
+  const apiKey = (process.env.CLOUDINARY_API_KEY || '').trim();
+  const apiSecret = (process.env.CLOUDINARY_API_SECRET || '').trim();
+  if (!cloudName || !apiKey || !apiSecret) return null;
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const folder = `volley-ladispoli/${subFolder}`;
+  const toSign = `folder=${folder}&timestamp=${timestamp}${apiSecret}`;
+  const signature = crypto.createHash('sha1').update(toSign).digest('hex');
+
+  const formBody = new URLSearchParams({
+    file: dataUri,
+    folder,
+    timestamp: String(timestamp),
+    api_key: apiKey,
+    signature
+  }).toString();
+
+  const resp = await httpsRequestJson(
+    `https://api.cloudinary.com/v1_1/${encodeURIComponent(cloudName)}/image/upload`,
+    {
+      method: 'POST',
+      timeout: 20000,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    },
+    formBody
+  );
+  return resp && typeof resp.secure_url === 'string' && resp.secure_url ? resp.secure_url : null;
+}
+
 let dbCache = null;
 let dbLoaded = false;
 let dbLoadPromise = null;
@@ -261,9 +294,20 @@ async function loadDbFromGist() {
     }
   });
   const fileEntry = gist?.files?.[GITHUB_GIST_FILENAME];
-  if (fileEntry && typeof fileEntry.content === 'string') {
-    const parsed = normalizeDb(JSON.parse(fileEntry.content));
-    return parsed;
+  if (!fileEntry) return null;
+  if (fileEntry.truncated && fileEntry.raw_url) {
+    const rawJson = await httpsRequestJson(fileEntry.raw_url, {
+      method: 'GET',
+      timeout: 12000,
+      headers: {
+        'User-Agent': 'VolleyLadispoliHub/2.0',
+        'Authorization': `Bearer ${GITHUB_TOKEN}`
+      }
+    });
+    return normalizeDb(rawJson);
+  }
+  if (typeof fileEntry.content === 'string') {
+    return normalizeDb(JSON.parse(fileEntry.content));
   }
   return null;
 }
@@ -1466,7 +1510,7 @@ const server = http.createServer(async (req, res) => {
       const imageUrl = String(body.imageUrl || '').trim();
 
       if (!title) {
-        return sendJson(res, 400, { error: 'Scrivi una didascalia divertente per la foto' });
+        return sendJson(res, 400, { error: 'Scrivi una descrizione per la foto' });
       }
       if (!authorName) {
         return sendJson(res, 400, { error: 'Inserisci il tuo nome' });
@@ -1484,11 +1528,21 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Foto troppo pesante dopo la compressione' });
       }
 
+      let finalImageUrl = imageUrl;
+      if (isDataImage) {
+        try {
+          const cloudUrl = await uploadDataUriToCloudinary(imageUrl, 'fem-photos');
+          if (cloudUrl) finalImageUrl = cloudUrl;
+        } catch (err) {
+          console.warn('Cloudinary fem-photo upload fallback:', err.message);
+        }
+      }
+
       const photo = {
         id: 'femphoto-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
         title,
         targetName,
-        imageUrl,
+        imageUrl: finalImageUrl,
         authorName,
         authorDeviceId: deviceId,
         upvotes: deviceId ? [deviceId] : [],
@@ -1564,7 +1618,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       const timestamp = Math.floor(Date.now() / 1000);
-      const folder = 'volley-ladispoli/' + (body.folder === 'socks' ? 'socks' : 'videos');
+      const allowedFolders = new Set(['socks', 'videos', 'avatars', 'fem-photos']);
+      const sub = allowedFolders.has(body.folder) ? body.folder : 'videos';
+      const folder = `volley-ladispoli/${sub}`;
       const toSign = `folder=${folder}&timestamp=${timestamp}${apiSecret}`;
       const signature = crypto.createHash('sha1').update(toSign).digest('hex');
 

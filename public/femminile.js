@@ -1016,7 +1016,7 @@
                   ` : ''}
 
                   <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; font-size:0.74rem; color:var(--text-tertiary);">
-                    <span>⏱️ Ritmo: ${escapeHtml(spacingNote)}</span>
+                    <span>Ritmo: ${escapeHtml(spacingNote)}</span>
                     <button type="button" class="text-action-btn" data-action="open-match" data-match-uid="${escapeHtml(spotlightMatch.uidKey)}">
                       ${res.played ? 'Vedi dettaglio gara ›' : 'Apri dettagli &amp; Calendario ›'}
                     </button>
@@ -1110,7 +1110,7 @@
           ` : ''}
 
           <div class="mc-footer">
-            <span class="mc-gym">📍 ${escapeHtml(m.stadium)}</span>
+            <span class="mc-gym">${escapeHtml(m.stadium)}</span>
             <span style="color:var(--accent-blue); font-weight:600; flex-shrink:0;">${res.played ? 'Dettaglio Set ›' : 'Calendario &amp; Maps ›'}</span>
           </div>
         </button>
@@ -1144,8 +1144,8 @@
       : '';
 
     const homeLabel = m.isHome && String(m.stadium || '').toUpperCase().includes('PANZANI')
-      ? '🏠 Partita in Casa (Pallone N. Panzani)'
-      : (m.isHome ? '🏠 Partita in Casa' : '🚌 Partita in Trasferta');
+      ? 'Partita in Casa (Pallone N. Panzani)'
+      : (m.isHome ? 'Partita in Casa' : 'Partita in Trasferta');
 
     document.getElementById('sheetMatchBody').innerHTML = `
       <div class="entry-card" style="margin-bottom: 1rem;">
@@ -1308,14 +1308,14 @@
               ${res.sets.map(s => `<span class="set-chip">${escapeHtml(s)}</span>`).join('')}
             </div>
           ` : ''}
-          <div style="font-size:0.72rem; color:var(--text-tertiary);">📍 ${escapeHtml(m.stadium)}</div>
+          <div style="font-size:0.72rem; color:var(--text-tertiary);">${escapeHtml(m.stadium)}</div>
         </div>
       `;
     }).join('');
   }
 
   // ==========================================
-  // FOTO DIVERTENTI ("SPUNNATE")
+  // FOTO SPUTTANANTI
   // ==========================================
   function savePhotosBackup() {
     try {
@@ -1364,10 +1364,9 @@
     if (items.length === 0) {
       gridEl.innerHTML = `
         <div class="media-empty-card" style="grid-column: 1 / -1;">
-          <div style="font-size:1.6rem;">😂</div>
-          <div>Nessuna foto caricata ancora. Spunna una compagna per iniziare!</div>
+          <div>Nessuna foto caricata.</div>
           <button type="button" class="btn-small-primary" data-action="open-upload-fem-photo">
-            + Carica la prima foto
+            + Carica foto
           </button>
         </div>
       `;
@@ -1385,7 +1384,7 @@
     gridEl.innerHTML = items.map(p => {
       const rankNum = rankedIds.indexOf(p.id) + 1;
       const rankCls = rankNum <= 3 ? `rank-${rankNum}` : '';
-      const medal = rankNum === 1 ? '🥇 #1' : rankNum === 2 ? '🥈 #2' : rankNum === 3 ? '🥉 #3' : `#${rankNum}`;
+      const medal = `#${rankNum}`;
       const metaText = `Di ${p.authorName || 'Compagna'} · ${formatRelativeTime(p.createdAt)}`;
       const caption = p.targetName ? `${p.title} (${p.targetName})` : p.title;
 
@@ -1398,12 +1397,12 @@
           <div class="sock-card-body">
             <div>
               <div class="sock-title">${escapeHtml(p.title)}</div>
-              ${p.targetName ? `<span class="fem-target-pill">🎯 ${escapeHtml(p.targetName)}</span>` : ''}
+              ${p.targetName ? `<span class="fem-target-pill">${escapeHtml(p.targetName)}</span>` : ''}
               <div class="sock-meta" style="margin-top:0.22rem;">${escapeHtml(metaText)}</div>
             </div>
             <div class="sock-actions-row">
               <button type="button" class="upvote-btn ${p.hasUpvoted ? 'is-upvoted' : ''}" data-action="upvote-fem-photo" data-photo-id="${escapeHtml(p.id)}">
-                <span>😂</span>
+                <span>▲</span>
                 <span>${p.upvotesCount || 0}</span>
               </button>
               ${p.canDelete ? `<button type="button" class="text-action-btn" style="color:var(--accent-red); font-size:0.75rem;" data-action="delete-fem-photo" data-photo-id="${escapeHtml(p.id)}">Elimina</button>` : ''}
@@ -1494,7 +1493,7 @@
       try {
         await navigator.share({
           title: 'Volley Ladispoli · 2ª Divisione & Under 19 Femminile',
-          text: 'Calendari 2ª Divisione e Under 19, classifiche FIPAV e foto divertenti Volley Ladispoli',
+          text: 'Calendari 2ª Divisione e Under 19, classifiche FIPAV e foto sputtananti Volley Ladispoli',
           url
         });
         return;
@@ -1649,7 +1648,7 @@
       renderGironeMatchesByRound();
     });
 
-    // Foto divertenti controls
+    // Foto sputtananti controls
     document.getElementById('btnOpenUploadFemPhoto')?.addEventListener('click', openUploadFemPhotoSheet);
     document.getElementById('btnFemPhotoSortToggle')?.addEventListener('click', () => {
       state.femPhotoSort = state.femPhotoSort === 'top' ? 'recent' : 'top';
@@ -1691,7 +1690,7 @@
         return;
       }
       if (!title) {
-        showToast('Scrivi una didascalia divertente', 'error');
+        showToast('Scrivi una descrizione per la foto', 'error');
         return;
       }
       if (!authorName) {
