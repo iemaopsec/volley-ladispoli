@@ -1406,6 +1406,10 @@ body.sheet-open {
   gap: 0.15rem;
 }
 
+.bottom-bar-inner.bottom-bar-two-tabs {
+  grid-template-columns: repeat(2, 1fr);
+}
+
 .nav-tab {
   position: relative;
   display: flex;
@@ -2102,6 +2106,7 @@ body.sheet-open {
     gap: 0.32rem;
   }
   .admin-pill,
+  .icon-pill-btn,
   .account-pill {
     height: 30px;
     padding: 0 0.54rem;
@@ -3439,6 +3444,7 @@ body.sheet-open {
    ========================================== */
 @media (hover: hover) and (pointer: fine) {
   .admin-pill:hover,
+  .icon-pill-btn:hover,
   .account-pill:hover,
   .disclosure-trigger:hover,
   .proof-mini-btn:hover {

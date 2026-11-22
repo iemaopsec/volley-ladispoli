@@ -9,8 +9,15 @@ const DATA_DIR = path.join(__dirname, 'data');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
-const FIPAV_CAL_FILE = path.join(DATA_DIR, 'fipav_calendar_64602.json');
-const FIPAV_TAB_FILE = path.join(DATA_DIR, 'fipav_tables_64602.json');
+const ALLOWED_FIPAV_GIRONI = new Set(['64602', '64591']);
+
+function getFipavFiles(gironeId = '64602') {
+  const gid = ALLOWED_FIPAV_GIRONI.has(gironeId) ? gironeId : '64602';
+  return {
+    calFile: path.join(DATA_DIR, `fipav_calendar_${gid}.json`),
+    tabFile: path.join(DATA_DIR, `fipav_tables_${gid}.json`)
+  };
+}
 
 const GITHUB_GIST_ID = (process.env.GITHUB_GIST_ID || '').trim();
 const GITHUB_TOKEN = (process.env.GITHUB_TOKEN || '').trim();
@@ -499,38 +506,37 @@ function parseVideoLink(rawUrl, explicitThumb = '') {
 // ==========================================
 // FIPAV DATA CACHE
 // ==========================================
-let fipavCache = {
-  lastUpdated: 0,
-  calendar: null,
-  tables: null
-};
+const fipavCacheByGirone = new Map();
 
-async function getFipavData(forceRefresh = false) {
+async function getFipavData(gironeId = '64602', forceRefresh = false) {
+  const gid = ALLOWED_FIPAV_GIRONI.has(String(gironeId || '')) ? String(gironeId) : '64602';
+  const { calFile, tabFile } = getFipavFiles(gid);
+  const cached = fipavCacheByGirone.get(gid) || { lastUpdated: 0, calendar: null, tables: null };
   const now = Date.now();
   const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 
-  if (!forceRefresh && fipavCache.calendar && fipavCache.tables && (now - fipavCache.lastUpdated < CACHE_TTL)) {
+  if (!forceRefresh && cached.calendar && cached.tables && (now - cached.lastUpdated < CACHE_TTL)) {
     return {
-      calendar: fipavCache.calendar,
-      tables: fipavCache.tables,
+      calendar: cached.calendar,
+      tables: cached.tables,
       source: 'memory-cache',
-      updatedAt: new Date(fipavCache.lastUpdated).toISOString()
+      updatedAt: new Date(cached.lastUpdated).toISOString()
     };
   }
 
   try {
     const [calData, tabData] = await Promise.all([
-      fetchJsonHttps('https://data.fipavonline.it/api/v2/calendar/0/64602'),
-      fetchJsonHttps('https://data.fipavonline.it/api/v2/tables/64602')
+      fetchJsonHttps(`https://data.fipavonline.it/api/v2/calendar/0/${gid}`),
+      fetchJsonHttps(`https://data.fipavonline.it/api/v2/tables/${gid}`)
     ]);
-    fipavCache = {
+    fipavCacheByGirone.set(gid, {
       lastUpdated: now,
       calendar: calData,
       tables: tabData
-    };
+    });
     try {
-      fs.writeFileSync(FIPAV_CAL_FILE, JSON.stringify(calData), 'utf8');
-      fs.writeFileSync(FIPAV_TAB_FILE, JSON.stringify(tabData), 'utf8');
+      fs.writeFileSync(calFile, JSON.stringify(calData), 'utf8');
+      fs.writeFileSync(tabFile, JSON.stringify(tabData), 'utf8');
     } catch (_) {}
     return {
       calendar: calData,
@@ -539,18 +545,18 @@ async function getFipavData(forceRefresh = false) {
       updatedAt: new Date(now).toISOString()
     };
   } catch (err) {
-    const calRaw = fs.existsSync(FIPAV_CAL_FILE) ? JSON.parse(fs.readFileSync(FIPAV_CAL_FILE, 'utf8')) : { data: { matches: [] } };
-    const tabRaw = fs.existsSync(FIPAV_TAB_FILE) ? JSON.parse(fs.readFileSync(FIPAV_TAB_FILE, 'utf8')) : [];
-    fipavCache = {
+    const calRaw = fs.existsSync(calFile) ? JSON.parse(fs.readFileSync(calFile, 'utf8')) : { data: { matches: [] } };
+    const tabRaw = fs.existsSync(tabFile) ? JSON.parse(fs.readFileSync(tabFile, 'utf8')) : [];
+    fipavCacheByGirone.set(gid, {
       lastUpdated: now,
       calendar: calRaw,
       tables: tabRaw
-    };
+    });
     return {
       calendar: calRaw,
       tables: tabRaw,
       source: 'local-cache',
-      updatedAt: fs.existsSync(FIPAV_CAL_FILE) ? fs.statSync(FIPAV_CAL_FILE).mtime.toISOString() : new Date().toISOString()
+      updatedAt: fs.existsSync(calFile) ? fs.statSync(calFile).mtime.toISOString() : new Date().toISOString()
     };
   }
 }
@@ -1474,9 +1480,23 @@ const server = http.createServer(async (req, res) => {
 
     // FIPAV LIVE PROXY
     if (pathname === '/api/fipav' && req.method === 'GET') {
+      const girone = (parsedUrl.searchParams.get('girone') || '64602').trim();
+      if (!ALLOWED_FIPAV_GIRONI.has(girone)) {
+        return sendJson(res, 400, { error: 'Girone FIPAV non supportato' });
+      }
       const force = parsedUrl.searchParams.get('refresh') === '1';
-      const data = await getFipavData(force);
+      const data = await getFipavData(girone, force);
       return sendJson(res, 200, data);
+    }
+
+    // EXTERNAL WOMEN'S CALENDAR (/femminile & /2df)
+    if (pathname === '/femminile' || pathname === '/femminile/' || pathname === '/2df' || pathname === '/2df/') {
+      const femHtml = path.join(PUBLIC_DIR, 'femminile.html');
+      if (fs.existsSync(femHtml)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        if (req.method === 'HEAD') return res.end();
+        return fs.createReadStream(femHtml).pipe(res);
+      }
     }
 
     // UPLOADED FILES STATIC WITH RANGE SUPPORT

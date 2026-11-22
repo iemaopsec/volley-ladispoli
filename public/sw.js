@@ -1,10 +1,14 @@
-const CACHE_NAME = 'vl-hub-v6';
+const CACHE_NAME = 'vl-hub-v7';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
   '/styles.css',
   '/app.js',
   '/manifest.json',
+  '/femminile',
+  '/femminile.js',
+  '/fipav-fallback-64591.js',
+  '/manifest-femminile.json',
   '/icon-192.png',
   '/logo-ladispoli.jpg'
 ];
@@ -41,9 +45,16 @@ self.addEventListener('fetch', (event) => {
     url.pathname === '/' ||
     url.pathname === '/index.html' ||
     url.pathname === '/app.js' ||
-    url.pathname === '/styles.css';
+    url.pathname === '/styles.css' ||
+    url.pathname.startsWith('/femminile') ||
+    url.pathname === '/2df' ||
+    url.pathname === '/femminile.js' ||
+    url.pathname === '/fipav-fallback-64591.js';
 
   if (isDocumentOrCode) {
+    const offlineFallbackUrl = (url.pathname.startsWith('/femminile') || url.pathname.startsWith('/2df'))
+      ? '/femminile'
+      : '/index.html';
     event.respondWith(
       fetch(request)
         .then((response) => {
@@ -53,7 +64,7 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(request).then((cached) => cached || caches.match('/index.html')))
+        .catch(() => caches.match(request).then((cached) => cached || caches.match(offlineFallbackUrl)))
     );
     return;
   }
