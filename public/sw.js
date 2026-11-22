@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vl-hub-v7';
+const CACHE_NAME = 'vl-hub-v8';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
@@ -8,6 +8,7 @@ const PRECACHE_URLS = [
   '/femminile',
   '/femminile.js',
   '/fipav-fallback-64591.js',
+  '/fipav-fallback-64854.js',
   '/manifest-femminile.json',
   '/icon-192.png',
   '/logo-ladispoli.jpg'
@@ -49,7 +50,8 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/femminile') ||
     url.pathname === '/2df' ||
     url.pathname === '/femminile.js' ||
-    url.pathname === '/fipav-fallback-64591.js';
+    url.pathname === '/fipav-fallback-64591.js' ||
+    url.pathname === '/fipav-fallback-64854.js';
 
   if (isDocumentOrCode) {
     const offlineFallbackUrl = (url.pathname.startsWith('/femminile') || url.pathname.startsWith('/2df'))

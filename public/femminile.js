@@ -1,9 +1,34 @@
 (function () {
   'use strict';
 
-  const GIRONE_ID = '64591';
-  const LADISPOLI_TEAM_ID = '231808';
-  const STORAGE_BACKUP_KEY = 'vl_femminile_fipav_backup_v1';
+  const COMPETITIONS = {
+    '2df': {
+      key: '2df',
+      gironeId: '64591',
+      teamId: '231808',
+      label: '2ª Divisione',
+      shortTag: '2ª Div',
+      fullTitle: 'Seconda Divisione Femminile Girone A',
+      subtitle: '2ª Div. Femminile · Girone A',
+      fipavUrl: 'https://public.fipavonline.it/gironi/64591',
+      backupKey: 'vl_fem_fipav_64591_v1'
+    },
+    'u19': {
+      key: 'u19',
+      gironeId: '64854',
+      teamId: '234864',
+      label: 'Under 19',
+      shortTag: 'U19',
+      fullTitle: 'Under 19 Femminile Promozionale Girone A',
+      subtitle: 'Under 19 Femminile · Girone A',
+      fipavUrl: 'https://public.fipavonline.it/gironi/64854',
+      backupKey: 'vl_fem_fipav_64854_v1'
+    }
+  };
+
+  const DEVICE_ID_KEY = 'vl_fem_device_id_v1';
+  const NICKNAME_KEY = 'vl_fem_nickname_v1';
+  const PHOTOS_BACKUP_KEY = 'vl_fem_photos_backup_v1';
 
   const LOCAL_TEAM_LOGOS = {
     '227760': '/logos/227760.png',
@@ -17,7 +42,15 @@
     '232108': '/logos/232108.jpg',
     '234691': '/logos/234691.jpg',
     '234786': '/logos/234786.png',
-    '234885': '/logos/234885.jpg'
+    '234885': '/logos/234885.jpg',
+    '233786': '/logos/233786.png',
+    '234864': '/logo-ladispoli.jpg',
+    '234903': '/logos/234903.jpg',
+    '235171': '/logos/235171.jpg',
+    '235462': '/logos/235462.jpg',
+    '235729': '/logos/235729.jpg',
+    '235801': '/logos/235801.png',
+    '235887': '/logos/235887.png'
   };
 
   const IT_MONTHS_SHORT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
@@ -34,15 +67,54 @@
   ];
 
   const state = {
-    fipavCalendar: null,
-    fipavTables: null,
-    fipavUpdatedAt: '',
+    fipav: {
+      '2df': { calendar: null, tables: null, updatedAt: '' },
+      'u19': { calendar: null, tables: null, updatedAt: '' }
+    },
+    activeComp: '2df',      // '2df' | 'u19' | 'all'
+    standingsComp: '2df',   // '2df' | 'u19'
     matchFilter: 'upcoming',
-    selectedGiornata: 'Giornata 1',
-    hasAutoSelectedRound: false,
+    selectedGiornataByComp: { '2df': 'Giornata 1', 'u19': 'Giornata 1' },
+    hasAutoSelectedRoundByComp: { '2df': false, 'u19': false },
     calMonthKey: '2026-11',
-    calSelectedMatchId: null
+    calSelectedDayKey: null,
+    femPhotos: [],
+    femPhotoSort: 'top', // 'top' | 'recent'
+    femPhotoCompressedDataUrl: ''
   };
+
+  let memoryDeviceId = '';
+  function getDeviceId() {
+    try {
+      let id = localStorage.getItem(DEVICE_ID_KEY);
+      if (!id) {
+        id = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+          ? `fem-${crypto.randomUUID()}`
+          : `fem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        localStorage.setItem(DEVICE_ID_KEY, id);
+      }
+      return id;
+    } catch (_) {
+      if (!memoryDeviceId) {
+        memoryDeviceId = `fem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+      return memoryDeviceId;
+    }
+  }
+
+  function getSavedNickname() {
+    try {
+      return localStorage.getItem(NICKNAME_KEY) || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function saveNickname(name) {
+    try {
+      localStorage.setItem(NICKNAME_KEY, String(name || '').trim());
+    } catch (_) {}
+  }
 
   // ==========================================
   // UTILITIES
@@ -71,6 +143,21 @@
     return teamObj.logo || '/logo-ladispoli.jpg';
   }
 
+  function formatRelativeTime(iso) {
+    if (!iso) return '';
+    try {
+      const dt = new Date(iso);
+      const diffMin = Math.floor((Date.now() - dt.getTime()) / 60000);
+      if (diffMin < 1) return 'Adesso';
+      if (diffMin < 60) return `${diffMin}m fa`;
+      const diffH = Math.floor(diffMin / 60);
+      if (diffH < 24) return `${diffH}h fa`;
+      return dt.toLocaleDateString('it-IT', { day: '2-digit', month: 'short' });
+    } catch (_) {
+      return '';
+    }
+  }
+
   function getSeasonMonths(matches) {
     const map = new Map(BASE_SEASON_MONTHS.map(m => [m.key, m]));
     for (const m of (matches || [])) {
@@ -97,9 +184,9 @@
     const text = String(msg || '');
     let tone = variant;
     if (tone === 'default') {
-      if (text.includes('⚠️') || /errat|non valid|non riuscit|manca/i.test(text)) {
+      if (text.includes('⚠️') || /errat|non valid|non riuscit|manca|impossibil/i.test(text)) {
         tone = 'error';
-      } else if (/aggiornat|scaricat|copiat|condivis/i.test(text)) {
+      } else if (/aggiornat|scaricat|copiat|condivis|pubblicat|eliminat/i.test(text)) {
         tone = 'success';
       }
     }
@@ -129,9 +216,9 @@
     setTimeout(dismiss, 2800);
   }
 
-  function saveFipavBackup(data) {
+  function saveCompBackup(compKey, data) {
     try {
-      localStorage.setItem(STORAGE_BACKUP_KEY, JSON.stringify({
+      localStorage.setItem(COMPETITIONS[compKey].backupKey, JSON.stringify({
         calendar: data.calendar,
         tables: data.tables,
         updatedAt: data.updatedAt || ''
@@ -139,9 +226,9 @@
     } catch (_) {}
   }
 
-  function loadFipavBackup() {
+  function loadCompBackup(compKey) {
     try {
-      const raw = localStorage.getItem(STORAGE_BACKUP_KEY);
+      const raw = localStorage.getItem(COMPETITIONS[compKey].backupKey);
       return raw ? JSON.parse(raw) : null;
     } catch (_) {
       return null;
@@ -149,13 +236,28 @@
   }
 
   // ==========================================
-  // BOTTOM SHEET & DRAG PHYSICS
+  // BOTTOM SHEETS & DRAG PHYSICS
   // ==========================================
   const sheetCloseTimers = new Map();
+
+  function syncStackedSheetDepth() {
+    const openSheets = Array.from(document.querySelectorAll('.sheet-backdrop.is-open'));
+    openSheets.sort((a, b) => {
+      const za = parseInt(window.getComputedStyle(a).zIndex, 10) || 100;
+      const zb = parseInt(window.getComputedStyle(b).zIndex, 10) || 100;
+      return za - zb;
+    });
+    const topBackdrop = openSheets[openSheets.length - 1] || null;
+    document.querySelectorAll('.sheet-backdrop').forEach(el => {
+      const isReceded = el.classList.contains('is-open') && el !== topBackdrop;
+      el.classList.toggle('is-receded', isReceded);
+    });
+  }
 
   function syncBodyScrollLock() {
     const anyOpen = Boolean(document.querySelector('.sheet-backdrop.is-open'));
     document.body.classList.toggle('sheet-open', anyOpen);
+    syncStackedSheetDepth();
   }
 
   function openSheet(sheetId) {
@@ -208,6 +310,17 @@
     sheetCloseTimers.set(sheetId, timer);
   }
 
+  function closeTopmostSheet() {
+    const openSheets = Array.from(document.querySelectorAll('.sheet-backdrop.is-open'));
+    if (openSheets.length === 0) return;
+    openSheets.sort((a, b) => {
+      const za = parseInt(window.getComputedStyle(a).zIndex, 10) || 100;
+      const zb = parseInt(window.getComputedStyle(b).zIndex, 10) || 100;
+      return za - zb;
+    });
+    closeSheet(openSheets[openSheets.length - 1].id);
+  }
+
   function attachSheetDragPhysics() {
     const projectMomentum = (vPxPerSec, decelerationRate = 0.992) => {
       return (vPxPerSec / 1000) * decelerationRate / (1 - decelerationRate);
@@ -229,7 +342,7 @@
       const onPointerDown = (e) => {
         if (window.innerWidth >= 700) return;
         if (activePointerId !== null) return;
-        if (e.target.closest('button, input, select, a, label')) return;
+        if (e.target.closest('button, input, select, a, label, [data-action="open-lightbox"]')) return;
         if (snapClearTimer) {
           clearTimeout(snapClearTimer);
           snapClearTimer = null;
@@ -318,35 +431,61 @@
   }
 
   // ==========================================
-  // FIPAV DATA LOADING
+  // FIPAV DATA LOADING (2DF + U19)
   // ==========================================
-  async function loadFipavData(forceRefresh = false) {
-    if (!state.fipavCalendar) {
-      const localBackup = loadFipavBackup();
-      if (localBackup && localBackup.calendar) {
-        state.fipavCalendar = localBackup.calendar;
-        state.fipavTables = localBackup.tables || [];
-        state.fipavUpdatedAt = localBackup.updatedAt || '';
-        renderCalendarAndStandings();
-      } else if (window.FIPAV_FALLBACK_DATA_64591) {
-        state.fipavCalendar = window.FIPAV_FALLBACK_DATA_64591.calendar;
-        state.fipavTables = window.FIPAV_FALLBACK_DATA_64591.tables;
-        state.fipavUpdatedAt = window.FIPAV_FALLBACK_DATA_64591.updatedAt;
-        renderCalendarAndStandings();
-      }
+  function hydrateCompFromFallbackOrBackup(compKey) {
+    if (state.fipav[compKey].calendar) return;
+    const backup = loadCompBackup(compKey);
+    if (backup && backup.calendar) {
+      state.fipav[compKey] = {
+        calendar: backup.calendar,
+        tables: backup.tables || [],
+        updatedAt: backup.updatedAt || ''
+      };
+      return;
     }
+    const globalFallback = compKey === '2df'
+      ? window.FIPAV_FALLBACK_DATA_64591
+      : window.FIPAV_FALLBACK_DATA_64854;
+    if (globalFallback && globalFallback.calendar) {
+      state.fipav[compKey] = {
+        calendar: globalFallback.calendar,
+        tables: globalFallback.tables || [],
+        updatedAt: globalFallback.updatedAt || ''
+      };
+    }
+  }
+
+  async function loadAllFipavData(forceRefresh = false) {
+    hydrateCompFromFallbackOrBackup('2df');
+    hydrateCompFromFallbackOrBackup('u19');
+    renderCalendarAndStandings();
 
     try {
-      const res = await fetch(`/api/fipav?girone=${GIRONE_ID}${forceRefresh ? '&refresh=1' : ''}`, {
-        cache: 'no-store'
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (data && data.calendar) {
-        state.fipavCalendar = data.calendar;
-        state.fipavTables = data.tables;
-        state.fipavUpdatedAt = data.updatedAt || new Date().toISOString();
-        saveFipavBackup(data);
+      const results = await Promise.all(['2df', 'u19'].map(async (compKey) => {
+        const gid = COMPETITIONS[compKey].gironeId;
+        const res = await fetch(`/api/fipav?girone=${gid}${forceRefresh ? '&refresh=1' : ''}`, {
+          cache: 'no-store'
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        return { compKey, data };
+      }));
+
+      let updatedAny = false;
+      for (const { compKey, data } of results) {
+        if (data && data.calendar) {
+          state.fipav[compKey] = {
+            calendar: data.calendar,
+            tables: data.tables || [],
+            updatedAt: data.updatedAt || new Date().toISOString()
+          };
+          saveCompBackup(compKey, state.fipav[compKey]);
+          updatedAny = true;
+        }
+      }
+
+      if (updatedAny) {
         renderCalendarAndStandings();
         if (forceRefresh) {
           showToast('Dati FIPAV aggiornati');
@@ -360,7 +499,7 @@
   }
 
   // ==========================================
-  // CALENDARIO & CLASSIFICA RENDERING
+  // MATCH NORMALIZATION & CALENDAR HELPERS
   // ==========================================
   function parseFipavMatchDate(dateStr, timeStr) {
     if (!dateStr) return null;
@@ -369,87 +508,59 @@
     return new Date(yyyy, mm - 1, dd, hh || 18, min || 0, 0);
   }
 
-  function getLadispoliMatches() {
-    const allMatches = state.fipavCalendar?.data?.matches || [];
+  function getMatchesForComp(compKey) {
+    const comp = COMPETITIONS[compKey];
+    if (!comp) return [];
+    const allMatches = state.fipav[compKey]?.calendar?.data?.matches || [];
     return allMatches
-      .filter(m => String(m.team1?.id) === LADISPOLI_TEAM_ID || String(m.team2?.id) === LADISPOLI_TEAM_ID)
+      .filter(m => String(m.team1?.id) === comp.teamId || String(m.team2?.id) === comp.teamId)
       .map(m => {
-        const isHome = String(m.team1?.id) === LADISPOLI_TEAM_ID;
+        const isHome = String(m.team1?.id) === comp.teamId;
         const opponent = isHome ? m.team2 : m.team1;
         const dt = parseFipavMatchDate(m.date, m.time);
+        const ymd = dt
+          ? `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+          : '';
         const giornataNum = parseInt((m.day || '').replace(/\D+/g, ''), 10) || 0;
-        return Object.assign({}, m, { isHome, opponent, dateObj: dt, giornataNum });
-      })
-      .sort((a, b) => a.giornataNum - b.giornataNum);
+        return Object.assign({}, m, {
+          compKey: comp.key,
+          compTag: comp.shortTag,
+          compFullTitle: comp.fullTitle,
+          gironeId: comp.gironeId,
+          ladispoliTeamId: comp.teamId,
+          uidKey: `${comp.key}:${m.id}`,
+          isHome,
+          opponent,
+          dateObj: dt,
+          ymd,
+          giornataNum
+        });
+      });
   }
 
-  function buildGoogleCalendarUrl(match) {
-    const dtStart = match.dateObj || new Date();
-    const dtEnd = new Date(dtStart.getTime() + 2 * 3600 * 1000);
-    const fmt = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-    const title = `Volley 2DF: ${match.team1.title} vs ${match.team2.title} (${match.day})`;
-    const details = `Seconda Divisione Femminile Girone A (${match.day}, Gara ${match.ng})\nPalestra: ${match.stadium}`;
-    const params = new URLSearchParams({
-      action: 'TEMPLATE',
-      text: title,
-      dates: `${fmt(dtStart)}/${fmt(dtEnd)}`,
-      details,
-      location: match.stadium || ''
-    });
-    return `https://calendar.google.com/calendar/render?${params.toString()}`;
-  }
-
-  function buildGoogleMapsUrl(match) {
-    if (match.stadium) {
-      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(match.stadium)}`;
+  function getDisplayedMatches() {
+    let list = [];
+    if (state.activeComp === 'all') {
+      list = [...getMatchesForComp('2df'), ...getMatchesForComp('u19')];
+    } else {
+      list = getMatchesForComp(state.activeComp);
     }
-    return 'https://www.google.com/maps';
+    return list.sort((a, b) => {
+      const ta = a.dateObj ? a.dateObj.getTime() : 0;
+      const tb = b.dateObj ? b.dateObj.getTime() : 0;
+      if (ta !== tb) return ta - tb;
+      if (a.compKey !== b.compKey) return a.compKey.localeCompare(b.compKey);
+      return a.giornataNum - b.giornataNum;
+    });
   }
 
-  function generateIcsContent(matchesArray) {
-    const fmt = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-    const nowStamp = fmt(new Date());
-    const events = matchesArray.map(m => {
-      const dtStart = m.dateObj || new Date();
-      const dtEnd = new Date(dtStart.getTime() + 2 * 3600 * 1000);
-      const summary = `Volley 2DF: ${m.team1.title} vs ${m.team2.title} (${m.day})`;
-      const desc = `Campionato FIPAV 2a Divisione Femminile Gir. A - ${m.day} (Gara ${m.ng}). Palestra: ${m.stadium}`;
-      return [
-        'BEGIN:VEVENT',
-        `UID:fipav-${GIRONE_ID}-${m.id}@volleyladispoli.it`,
-        `DTSTAMP:${nowStamp}`,
-        `DTSTART:${fmt(dtStart)}`,
-        `DTEND:${fmt(dtEnd)}`,
-        `SUMMARY:${summary.replace(/,/g, '\\,')}`,
-        `DESCRIPTION:${desc.replace(/,/g, '\\,')}`,
-        `LOCATION:${(m.stadium || '').replace(/,/g, '\\,')}`,
-        'END:VEVENT'
-      ].join('\r\n');
-    }).join('\r\n');
-
-    return [
-      'BEGIN:VCALENDAR',
-      'VERSION:2.0',
-      `PRODID:-//Volley Ladispoli 2DF//FIPAV ${GIRONE_ID}//IT`,
-      'CALSCALE:GREGORIAN',
-      'METHOD:PUBLISH',
-      events,
-      'END:VCALENDAR'
-    ].join('\r\n');
+  function getAllKnownMatches() {
+    return [...getMatchesForComp('2df'), ...getMatchesForComp('u19')];
   }
 
-  function downloadIcsFile(filename, icsText) {
-    const blob = new Blob([icsText], { type: 'text/calendar;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 200);
+  function renderCompBadgeHtml(m) {
+    if (state.activeComp !== 'all') return '';
+    return `<span class="comp-badge comp-badge-${escapeHtml(m.compKey)}">${escapeHtml(m.compTag)}</span>`;
   }
 
   function isMatchPlayed(m) {
@@ -473,8 +584,9 @@
         sets.push(`${ptA[i] ?? 0}-${ptB[i] ?? 0}`);
       }
     }
-    const isUsInvolved = String(m.team1?.id) === LADISPOLI_TEAM_ID || String(m.team2?.id) === LADISPOLI_TEAM_ID;
-    const isUsHome = String(m.team1?.id) === LADISPOLI_TEAM_ID;
+    const ladId = m.ladispoliTeamId || '';
+    const isUsInvolved = Boolean(ladId && (String(m.team1?.id) === ladId || String(m.team2?.id) === ladId));
+    const isUsHome = Boolean(ladId && String(m.team1?.id) === ladId);
     const didWeWin = played && isUsInvolved ? (isUsHome ? s1 > s2 : s2 > s1) : null;
     return {
       played,
@@ -486,13 +598,97 @@
     };
   }
 
+  function buildGoogleCalendarUrl(match) {
+    const dtStart = match.dateObj || new Date();
+    const dtEnd = new Date(dtStart.getTime() + 2 * 3600 * 1000);
+    const fmt = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    const prefix = match.compTag ? `Volley ${match.compTag}` : 'Volley';
+    const title = `${prefix}: ${match.team1.title} vs ${match.team2.title} (${match.day})`;
+    const details = `${match.compFullTitle || 'Campionato FIPAV'} (${match.day}, Gara ${match.ng})\nPalestra: ${match.stadium}`;
+    const params = new URLSearchParams({
+      action: 'TEMPLATE',
+      text: title,
+      dates: `${fmt(dtStart)}/${fmt(dtEnd)}`,
+      details,
+      location: match.stadium || ''
+    });
+    return `https://calendar.google.com/calendar/render?${params.toString()}`;
+  }
+
+  function buildGoogleMapsUrl(match) {
+    if (match.stadium) {
+      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(match.stadium)}`;
+    }
+    return 'https://www.google.com/maps';
+  }
+
+  function generateIcsContent(matchesArray) {
+    const fmt = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    const nowStamp = fmt(new Date());
+    const events = matchesArray.map(m => {
+      const dtStart = m.dateObj || new Date();
+      const dtEnd = new Date(dtStart.getTime() + 2 * 3600 * 1000);
+      const summary = `Volley ${m.compTag || ''}: ${m.team1.title} vs ${m.team2.title} (${m.day})`;
+      const desc = `Campionato FIPAV ${m.compFullTitle || ''} - ${m.day} (Gara ${m.ng}). Palestra: ${m.stadium}`;
+      return [
+        'BEGIN:VEVENT',
+        `UID:fipav-${m.gironeId || '64591'}-${m.id}@volleyladispoli.it`,
+        `DTSTAMP:${nowStamp}`,
+        `DTSTART:${fmt(dtStart)}`,
+        `DTEND:${fmt(dtEnd)}`,
+        `SUMMARY:${summary.replace(/,/g, '\\,')}`,
+        `DESCRIPTION:${desc.replace(/,/g, '\\,')}`,
+        `LOCATION:${(m.stadium || '').replace(/,/g, '\\,')}`,
+        'END:VEVENT'
+      ].join('\r\n');
+    }).join('\r\n');
+
+    return [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Volley Ladispoli Femminile//FIPAV//IT',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      events,
+      'END:VCALENDAR'
+    ].join('\r\n');
+  }
+
+  function downloadIcsFile(filename, icsText) {
+    const blob = new Blob([icsText], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 200);
+  }
+
+  // ==========================================
+  // RENDERERS: MATCHES, SPATIAL CAL & STANDINGS
+  // ==========================================
+  function updateBrandSubtitle() {
+    const labelEl = document.getElementById('brandSubLabel');
+    if (!labelEl) return;
+    if (state.activeComp === 'all') {
+      labelEl.textContent = '2ª Div. & Under 19 Femminile';
+    } else {
+      labelEl.textContent = COMPETITIONS[state.activeComp].subtitle;
+    }
+  }
+
   function renderCalendarAndStandings() {
-    const matches = getLadispoliMatches();
+    updateBrandSubtitle();
+    const matches = getDisplayedMatches();
     const seasonMonths = getSeasonMonths(matches);
-    if (!state.calSelectedMatchId && matches.length > 0) {
+    if (!state.calSelectedDayKey && matches.length > 0) {
       const now = new Date();
       const nextMatch = matches.find(m => !isMatchPlayed(m) && m.dateObj && m.dateObj >= new Date(now.getTime() - 3 * 3600 * 1000)) || matches[matches.length - 1];
-      state.calSelectedMatchId = nextMatch.id;
+      state.calSelectedDayKey = nextMatch.ymd || null;
       if (nextMatch.dateObj) {
         const y = nextMatch.dateObj.getFullYear();
         const m = String(nextMatch.dateObj.getMonth() + 1).padStart(2, '0');
@@ -503,22 +699,24 @@
       }
     }
 
-    renderLastMatchCard();
-    renderNextMatchCard();
-    renderSpatialCalendar();
-    renderCompactMatchesList();
+    renderLastMatchCard(matches);
+    renderNextMatchCard(matches);
+    renderSpatialCalendar(matches);
+    renderCompactMatchesList(matches);
     renderStandings();
     renderGironeMatchesByRound();
   }
 
-  function renderLastMatchCard() {
+  function renderLastMatchCard(matches) {
     const card = document.getElementById('lastMatchCard');
     if (!card) return;
 
-    const playedMatches = getLadispoliMatches().filter(m => isMatchPlayed(m));
+    const playedMatches = (matches || getDisplayedMatches()).filter(m => isMatchPlayed(m));
     if (playedMatches.length === 0) {
       card.classList.add('hidden');
       card.innerHTML = '';
+      card.onclick = null;
+      card.onkeydown = null;
       return;
     }
 
@@ -532,20 +730,23 @@
 
     card.innerHTML = `
       <div class="lm-top">
-        <span>Ultimo Risultato · ${escapeHtml(lastMatch.day)} · ${escapeHtml(lastMatch.date)}</span>
+        <span style="display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap;">
+          ${renderCompBadgeHtml(lastMatch)}
+          <span>Ultimo Risultato · ${escapeHtml(lastMatch.day)} · ${escapeHtml(lastMatch.date)}</span>
+        </span>
         <span class="lm-result-badge ${outcomeCls}">${outcomeLabel}</span>
       </div>
 
       <div class="mc-versus-row" style="border-top:none; padding-top:0;">
         <div class="mc-team">
           <img src="${escapeHtml(getTeamLogo(lastMatch.team1))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
-          <span class="mc-team-title ${String(lastMatch.team1.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(lastMatch.team1.title)}</span>
+          <span class="mc-team-title ${String(lastMatch.team1.id) === lastMatch.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(lastMatch.team1.title)}</span>
         </div>
 
         <span class="mc-score-pill ${outcomeCls}">${res.scoreText}</span>
 
         <div class="mc-team mc-team-right">
-          <span class="mc-team-title ${String(lastMatch.team2.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(lastMatch.team2.title)}</span>
+          <span class="mc-team-title ${String(lastMatch.team2.id) === lastMatch.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(lastMatch.team2.title)}</span>
           <img src="${escapeHtml(getTeamLogo(lastMatch.team2))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
         </div>
       </div>
@@ -560,24 +761,27 @@
 
     card.setAttribute('role', 'button');
     card.setAttribute('tabindex', '0');
-    card.onclick = () => openMatchDetailSheet(lastMatch.id);
+    card.onclick = () => openMatchDetailSheet(lastMatch.uidKey);
     card.onkeydown = (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault();
-        openMatchDetailSheet(lastMatch.id);
+        openMatchDetailSheet(lastMatch.uidKey);
       }
     };
   }
 
-  function renderNextMatchCard() {
+  function renderNextMatchCard(matches) {
     const card = document.getElementById('nextMatchCard');
     if (!card) return;
 
-    const matches = getLadispoliMatches();
-    if (matches.length === 0) return;
+    const list = matches || getDisplayedMatches();
+    if (list.length === 0) {
+      card.innerHTML = '';
+      return;
+    }
 
     const now = new Date();
-    const nextMatch = matches.find(m => !isMatchPlayed(m) && m.dateObj && m.dateObj >= new Date(now.getTime() - 3 * 3600 * 1000)) || matches[matches.length - 1];
+    const nextMatch = list.find(m => !isMatchPlayed(m) && m.dateObj && m.dateObj >= new Date(now.getTime() - 3 * 3600 * 1000)) || list[list.length - 1];
     const res = getMatchResultInfo(nextMatch);
     const diffMs = (nextMatch.dateObj || now) - now;
     let countdown = res.played ? `Risultato ${res.scoreText}` : 'Prossima gara';
@@ -588,14 +792,17 @@
 
     card.innerHTML = `
       <div class="nm-top">
-        <span class="nm-tag">${res.played ? 'Ultima Partita' : 'Prossima Partita'} · ${escapeHtml(nextMatch.day)}</span>
+        <span class="nm-tag" style="display:inline-flex; align-items:center; gap:0.4rem; flex-wrap:wrap;">
+          ${renderCompBadgeHtml(nextMatch)}
+          <span>${res.played ? 'Ultima Partita' : 'Prossima Partita'} · ${escapeHtml(nextMatch.day)}</span>
+        </span>
         <span class="nm-countdown">${countdown}</span>
       </div>
 
       <div class="nm-teams">
         <div class="nm-team">
           <img src="${escapeHtml(getTeamLogo(nextMatch.team1))}" alt="" class="nm-logo" onerror="this.src='/logo-ladispoli.jpg'" />
-          <span class="nm-team-name ${String(nextMatch.team1.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(nextMatch.team1.title)}</span>
+          <span class="nm-team-name ${String(nextMatch.team1.id) === nextMatch.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(nextMatch.team1.title)}</span>
         </div>
 
         <div class="nm-center">
@@ -608,7 +815,7 @@
 
         <div class="nm-team">
           <img src="${escapeHtml(getTeamLogo(nextMatch.team2))}" alt="" class="nm-logo" onerror="this.src='/logo-ladispoli.jpg'" />
-          <span class="nm-team-name ${String(nextMatch.team2.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(nextMatch.team2.title)}</span>
+          <span class="nm-team-name ${String(nextMatch.team2.id) === nextMatch.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(nextMatch.team2.title)}</span>
         </div>
       </div>
 
@@ -618,7 +825,7 @@
       </div>
 
       <div class="nm-actions">
-        <button type="button" class="btn-primary-half" data-action="open-match" data-match-id="${nextMatch.id}">
+        <button type="button" class="btn-primary-half" data-action="open-match" data-match-uid="${escapeHtml(nextMatch.uidKey)}">
           ${res.played ? 'Vedi Parziali' : 'Al Calendario'}
         </button>
         <a href="${buildGoogleMapsUrl(nextMatch)}" target="_blank" rel="noopener noreferrer" class="btn-secondary-half">
@@ -628,29 +835,33 @@
     `;
   }
 
-  function renderSpatialCalendar() {
+  function renderSpatialCalendar(matchesInput) {
     const pillsWrap = document.getElementById('calMonthPills');
     const monthLabel = document.getElementById('calCurrentMonthLabel');
     const monthMatchCount = document.getElementById('calMonthMatchCount');
     const gridEl = document.getElementById('calDaysGrid');
     const spotlightEl = document.getElementById('calSelectedMatchSpotlight');
+    const compLegend = document.getElementById('calCompLegend');
     if (!pillsWrap || !gridEl) return;
 
-    const matches = getLadispoliMatches();
+    const matches = matchesInput || getDisplayedMatches();
     const seasonMonths = getSeasonMonths(matches);
     const currentMonthObj = seasonMonths.find(m => m.key === state.calMonthKey) || seasonMonths[0];
+
+    if (compLegend) {
+      compLegend.classList.toggle('hidden', state.activeComp !== 'all');
+    }
 
     const matchesByMonth = new Map();
     const matchesByDay = new Map();
     for (const m of matches) {
-      if (!m.dateObj) continue;
-      const yy = m.dateObj.getFullYear();
-      const mm = String(m.dateObj.getMonth() + 1).padStart(2, '0');
-      const dd = String(m.dateObj.getDate()).padStart(2, '0');
-      const mKey = `${yy}-${mm}`;
-      const dKey = `${yy}-${mm}-${dd}`;
+      if (!m.dateObj || !m.ymd) continue;
+      const mKey = m.ymd.slice(0, 7);
       matchesByMonth.set(mKey, (matchesByMonth.get(mKey) || 0) + 1);
-      matchesByDay.set(dKey, m);
+      if (!matchesByDay.has(m.ymd)) {
+        matchesByDay.set(m.ymd, []);
+      }
+      matchesByDay.get(m.ymd).push(m);
     }
 
     pillsWrap.innerHTML = seasonMonths.map(sm => {
@@ -684,11 +895,12 @@
     for (let day = 1; day <= daysInMonth; day++) {
       const ddStr = String(day).padStart(2, '0');
       const ymd = `${currentMonthObj.year}-${mmStr}-${ddStr}`;
-      const match = matchesByDay.get(ymd);
+      const dayMatches = matchesByDay.get(ymd) || [];
       const isToday = ymd === todayYmd;
 
-      if (match) {
-        const isSelected = String(state.calSelectedMatchId) === String(match.id);
+      if (dayMatches.length === 1) {
+        const match = dayMatches[0];
+        const isSelected = state.calSelectedDayKey === ymd;
         const haClass = match.isHome ? 'match-home' : 'match-away';
         const oppLogo = getTeamLogo(match.opponent);
         const shortTime = (match.time || '18.00').replace('.', ':');
@@ -697,12 +909,28 @@
         const cellBottom = res.played
           ? `<span class="cal-cell-score ${res.didWeWin ? 'is-win' : 'is-loss'}">${res.scoreText}</span>`
           : `<span class="cal-cell-time">${escapeHtml(shortTime)}</span>`;
+        const compDot = state.activeComp === 'all'
+          ? `<span class="cal-comp-dot cal-comp-dot-${escapeHtml(match.compKey)}" aria-hidden="true"></span>`
+          : '';
 
         cellsHtml.push(`
-          <button type="button" class="cal-day-cell has-match ${haClass} ${playedClass} ${isSelected ? 'is-selected' : ''}" data-action="select-cal-match" data-match-id="${match.id}" title="${escapeHtml(match.day)}: ${escapeHtml(match.opponent.title)}">
+          <button type="button" class="cal-day-cell has-match ${haClass} ${playedClass} ${isSelected ? 'is-selected' : ''}" data-action="select-cal-day" data-day-key="${ymd}" title="${escapeHtml(match.compTag)} · ${escapeHtml(match.day)}: ${escapeHtml(match.opponent.title)}">
+            ${compDot}
             <span class="cal-day-num">${day}</span>
             <img src="${escapeHtml(oppLogo)}" alt="" class="cal-cell-logo" onerror="this.src='/logo-ladispoli.jpg'" />
             ${cellBottom}
+          </button>
+        `);
+      } else if (dayMatches.length >= 2) {
+        const isSelected = state.calSelectedDayKey === ymd;
+        const titleAttr = dayMatches.map(mm => `${mm.compTag}: ${mm.opponent.title}`).join(' / ');
+        cellsHtml.push(`
+          <button type="button" class="cal-day-cell has-match has-multi-match ${isSelected ? 'is-selected' : ''}" data-action="select-cal-day" data-day-key="${ymd}" title="${escapeHtml(titleAttr)}">
+            <span class="cal-day-num">${day}</span>
+            <div class="cal-multi-logos">
+              ${dayMatches.slice(0, 2).map(mm => `<img src="${escapeHtml(getTeamLogo(mm.opponent))}" alt="" class="cal-multi-logo" onerror="this.src='/logo-ladispoli.jpg'" />`).join('')}
+            </div>
+            <span class="cal-multi-count">${dayMatches.length} gare</span>
           </button>
         `);
       } else {
@@ -716,76 +944,102 @@
 
     gridEl.innerHTML = cellsHtml.join('');
 
-    let spotlightMatch = matches.find(m => String(m.id) === String(state.calSelectedMatchId));
-    if (!spotlightMatch || !spotlightMatch.dateObj || `${spotlightMatch.dateObj.getFullYear()}-${String(spotlightMatch.dateObj.getMonth() + 1).padStart(2, '0')}` !== currentMonthObj.key) {
-      spotlightMatch = matches.find(m => m.dateObj && `${m.dateObj.getFullYear()}-${String(m.dateObj.getMonth() + 1).padStart(2, '0')}` === currentMonthObj.key) || matches[0];
-      if (spotlightMatch) {
-        state.calSelectedMatchId = spotlightMatch.id;
-      }
+    // Pick spotlight day inside active month
+    const monthPrefix = `${currentMonthObj.key}-`;
+    const monthMatches = matches.filter(m => m.ymd && m.ymd.startsWith(monthPrefix));
+    if (!state.calSelectedDayKey || !state.calSelectedDayKey.startsWith(monthPrefix) || !matchesByDay.has(state.calSelectedDayKey)) {
+      const now = new Date();
+      const candidate = monthMatches.find(m => !isMatchPlayed(m) && m.dateObj && m.dateObj >= new Date(now.getTime() - 3 * 3600 * 1000)) || monthMatches[0];
+      state.calSelectedDayKey = candidate ? candidate.ymd : null;
     }
 
-    if (spotlightMatch && spotlightEl) {
-      const res = getMatchResultInfo(spotlightMatch);
-      const matchIdx = matches.findIndex(m => m.id === spotlightMatch.id);
-      const prevMatch = matchIdx > 0 ? matches[matchIdx - 1] : null;
-      let spacingNote = 'Prima giornata di campionato';
-      if (prevMatch && prevMatch.dateObj && spotlightMatch.dateObj) {
-        const gapDays = Math.round((spotlightMatch.dateObj - prevMatch.dateObj) / 86400000);
-        spacingNote = `${gapDays} giorni dopo la ${prevMatch.day}`;
+    const spotlightMatches = state.calSelectedDayKey ? (matchesByDay.get(state.calSelectedDayKey) || []) : [];
+    if (spotlightEl) {
+      if (spotlightMatches.length === 0) {
+        const compLabel = state.activeComp === 'all' ? 'nessun campionato' : COMPETITIONS[state.activeComp].label;
+        spotlightEl.innerHTML = `
+          <div class="spotlight-box" style="text-align:center; color:var(--text-tertiary); font-size:0.82rem;">
+            Nessuna partita in ${escapeHtml(currentMonthObj.fullLabel)} (${escapeHtml(compLabel)}).
+          </div>
+        `;
+      } else {
+        spotlightEl.innerHTML = `
+          <div class="cal-spotlight-stack">
+            ${spotlightMatches.map(spotlightMatch => {
+              const res = getMatchResultInfo(spotlightMatch);
+              const sameCompMatches = matches.filter(m => m.compKey === spotlightMatch.compKey);
+              const matchIdx = sameCompMatches.findIndex(m => m.uidKey === spotlightMatch.uidKey);
+              const prevMatch = matchIdx > 0 ? sameCompMatches[matchIdx - 1] : null;
+              let spacingNote = 'Prima giornata di campionato';
+              if (prevMatch && prevMatch.dateObj && spotlightMatch.dateObj) {
+                const gapDays = Math.round((spotlightMatch.dateObj - prevMatch.dateObj) / 86400000);
+                spacingNote = `${gapDays} giorni dopo la ${prevMatch.day}`;
+              }
+
+              const fullDateStr = spotlightMatch.dateObj
+                ? spotlightMatch.dateObj.toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
+                : spotlightMatch.date;
+
+              const centerBadge = res.played
+                ? `<span class="mc-score-pill ${res.didWeWin ? 'is-win' : 'is-loss'}">${res.scoreText}</span>`
+                : `<span class="sp-vs">VS</span>`;
+
+              return `
+                <div class="spotlight-box">
+                  <div class="spotlight-meta">
+                    <span style="display:flex; align-items:center; gap:0.35rem; flex-wrap:wrap;">
+                      ${renderCompBadgeHtml(spotlightMatch)}
+                      <span><strong>${escapeHtml(spotlightMatch.day)}</strong> · ${escapeHtml(fullDateStr)} · Ore ${escapeHtml((spotlightMatch.time || '').replace('.', ':'))}</span>
+                    </span>
+                    <span class="ha-tag ${spotlightMatch.isHome ? 'ha-home' : 'ha-away'}" style="margin:0;">
+                      ${spotlightMatch.isHome ? 'In Casa' : 'Trasferta'}
+                    </span>
+                  </div>
+
+                  <div class="spotlight-teams-line">
+                    <div class="sp-team">
+                      <img src="${escapeHtml(getTeamLogo(spotlightMatch.team1))}" alt="" class="sp-logo" onerror="this.src='/logo-ladispoli.jpg'" />
+                      <span class="sp-name ${String(spotlightMatch.team1.id) === spotlightMatch.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(spotlightMatch.team1.title)}</span>
+                    </div>
+                    ${centerBadge}
+                    <div class="sp-team sp-right">
+                      <span class="sp-name ${String(spotlightMatch.team2.id) === spotlightMatch.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(spotlightMatch.team2.title)}</span>
+                      <img src="${escapeHtml(getTeamLogo(spotlightMatch.team2))}" alt="" class="sp-logo" onerror="this.src='/logo-ladispoli.jpg'" />
+                    </div>
+                  </div>
+
+                  ${res.played && res.sets.length > 0 ? `
+                    <div class="set-partials-row">
+                      <span style="font-size:0.7rem; font-weight:700; color:var(--text-tertiary);">Parziali:</span>
+                      ${res.sets.map(s => `<span class="set-chip">${escapeHtml(s)}</span>`).join('')}
+                    </div>
+                  ` : ''}
+
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; font-size:0.74rem; color:var(--text-tertiary);">
+                    <span>⏱️ Ritmo: ${escapeHtml(spacingNote)}</span>
+                    <button type="button" class="text-action-btn" data-action="open-match" data-match-uid="${escapeHtml(spotlightMatch.uidKey)}">
+                      ${res.played ? 'Vedi dettaglio gara ›' : 'Apri dettagli &amp; Calendario ›'}
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
       }
-
-      const fullDateStr = spotlightMatch.dateObj
-        ? spotlightMatch.dateObj.toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
-        : spotlightMatch.date;
-
-      const centerBadge = res.played
-        ? `<span class="mc-score-pill ${res.didWeWin ? 'is-win' : 'is-loss'}">${res.scoreText}</span>`
-        : `<span class="sp-vs">VS</span>`;
-
-      spotlightEl.innerHTML = `
-        <div class="spotlight-box">
-          <div class="spotlight-meta">
-            <span><strong>${escapeHtml(spotlightMatch.day)}</strong> · ${escapeHtml(fullDateStr)} · Ore ${escapeHtml((spotlightMatch.time || '').replace('.', ':'))}</span>
-            <span class="ha-tag ${spotlightMatch.isHome ? 'ha-home' : 'ha-away'}" style="margin:0;">
-              ${spotlightMatch.isHome ? 'In Casa' : 'Trasferta'}
-            </span>
-          </div>
-
-          <div class="spotlight-teams-line">
-            <div class="sp-team">
-              <img src="${escapeHtml(getTeamLogo(spotlightMatch.team1))}" alt="" class="sp-logo" onerror="this.src='/logo-ladispoli.jpg'" />
-              <span class="sp-name ${String(spotlightMatch.team1.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(spotlightMatch.team1.title)}</span>
-            </div>
-            ${centerBadge}
-            <div class="sp-team sp-right">
-              <span class="sp-name ${String(spotlightMatch.team2.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(spotlightMatch.team2.title)}</span>
-              <img src="${escapeHtml(getTeamLogo(spotlightMatch.team2))}" alt="" class="sp-logo" onerror="this.src='/logo-ladispoli.jpg'" />
-            </div>
-          </div>
-
-          ${res.played && res.sets.length > 0 ? `
-            <div class="set-partials-row">
-              <span style="font-size:0.7rem; font-weight:700; color:var(--text-tertiary);">Parziali:</span>
-              ${res.sets.map(s => `<span class="set-chip">${escapeHtml(s)}</span>`).join('')}
-            </div>
-          ` : ''}
-
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; font-size:0.74rem; color:var(--text-tertiary);">
-            <span>⏱️ Ritmo: ${escapeHtml(spacingNote)}</span>
-            <button type="button" class="text-action-btn" data-action="open-match" data-match-id="${spotlightMatch.id}">
-              ${res.played ? 'Vedi dettaglio gara ›' : 'Apri dettagli &amp; Calendario ›'}
-            </button>
-          </div>
-        </div>
-      `;
     }
   }
 
-  function renderCompactMatchesList() {
+  function renderCompactMatchesList(matchesInput) {
     const listEl = document.getElementById('matchesList');
+    const headingEl = document.getElementById('matchesListHeading');
     if (!listEl) return;
 
-    const allMatches = getLadispoliMatches();
+    const allMatches = matchesInput || getDisplayedMatches();
+    if (headingEl) {
+      headingEl.textContent = `Tutte le ${allMatches.length} Partite`;
+    }
+
     const playedCount = allMatches.filter(m => isMatchPlayed(m)).length;
     const playedTab = document.querySelector('#matchFilterControl [data-matchfilter="played"]');
     if (playedTab) {
@@ -826,22 +1080,25 @@
         : `<span class="mc-center-time">${escapeHtml(timeStr)}</span>`;
 
       return `
-        <button type="button" class="matchup-card" data-action="open-match" data-match-id="${m.id}">
+        <button type="button" class="matchup-card" data-action="open-match" data-match-uid="${escapeHtml(m.uidKey)}">
           <div class="mc-header">
-            <span><strong>${escapeHtml(m.day)}</strong> · <span class="mc-date-time" style="text-transform:capitalize;">${escapeHtml(dateStr)}</span></span>
+            <span style="display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap;">
+              ${renderCompBadgeHtml(m)}
+              <span><strong>${escapeHtml(m.day)}</strong> · <span class="mc-date-time" style="text-transform:capitalize;">${escapeHtml(dateStr)}</span></span>
+            </span>
             ${haBadge}
           </div>
 
           <div class="mc-versus-row">
             <div class="mc-team">
               <img src="${escapeHtml(getTeamLogo(m.team1))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
-              <span class="mc-team-title ${String(m.team1.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(m.team1.title)}</span>
+              <span class="mc-team-title ${String(m.team1.id) === m.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(m.team1.title)}</span>
             </div>
 
             ${centerSlot}
 
             <div class="mc-team mc-team-right">
-              <span class="mc-team-title ${String(m.team2.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(m.team2.title)}</span>
+              <span class="mc-team-title ${String(m.team2.id) === m.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(m.team2.title)}</span>
               <img src="${escapeHtml(getTeamLogo(m.team2))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
             </div>
           </div>
@@ -861,13 +1118,13 @@
     }).join('');
   }
 
-  function openMatchDetailSheet(matchId) {
-    const matches = getLadispoliMatches();
-    const m = matches.find(item => String(item.id) === String(matchId));
+  function openMatchDetailSheet(uidKey) {
+    const matches = getAllKnownMatches();
+    const m = matches.find(item => item.uidKey === uidKey);
     if (!m) return;
 
     const res = getMatchResultInfo(m);
-    document.getElementById('sheetMatchGiornata').textContent = `${m.day} · Gara #${m.ng}`;
+    document.getElementById('sheetMatchGiornata').textContent = `${m.compTag} · ${m.day} · Gara #${m.ng}`;
     document.getElementById('sheetMatchTitle').textContent = `${m.team1.title} vs ${m.team2.title}`;
 
     const fullDate = m.dateObj
@@ -895,11 +1152,11 @@
         <div class="mc-versus-row" style="border-top:none; padding-top:0;">
           <div class="mc-team">
             <img src="${escapeHtml(getTeamLogo(m.team1))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
-            <span class="mc-team-title ${String(m.team1.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(m.team1.title)}</span>
+            <span class="mc-team-title ${String(m.team1.id) === m.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(m.team1.title)}</span>
           </div>
           ${centerEl}
           <div class="mc-team mc-team-right">
-            <span class="mc-team-title ${String(m.team2.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}">${escapeHtml(m.team2.title)}</span>
+            <span class="mc-team-title ${String(m.team2.id) === m.ladispoliTeamId ? 'is-us' : ''}">${escapeHtml(m.team2.title)}</span>
             <img src="${escapeHtml(getTeamLogo(m.team2))}" alt="" class="mc-logo" onerror="this.src='/logo-ladispoli.jpg'" />
           </div>
         </div>
@@ -919,7 +1176,7 @@
         <a href="${buildGoogleCalendarUrl(m)}" target="_blank" rel="noopener noreferrer" class="btn-primary-full">
           Aggiungi a Google Calendar
         </a>
-        <button type="button" class="btn-secondary-half" style="width:100%;" data-action="download-match-ics" data-match-id="${m.id}">
+        <button type="button" class="btn-secondary-half" style="width:100%;" data-action="download-match-ics" data-match-uid="${escapeHtml(m.uidKey)}">
           Scarica per Calendario iPhone / Apple (.ics)
         </button>
         <a href="${buildGoogleMapsUrl(m)}" target="_blank" rel="noopener noreferrer" class="btn-secondary-half" style="width:100%;">
@@ -933,11 +1190,23 @@
 
   function renderStandings() {
     const tbody = document.getElementById('standingsBody');
+    const titleEl = document.getElementById('standingsTitle');
+    const linkEl = document.getElementById('standingsFipavLink');
     if (!tbody) return;
-    const teams = (Array.isArray(state.fipavTables) ? state.fipavTables[0]?.data?.teams : state.fipavTables?.data?.teams) || [];
+
+    const comp = COMPETITIONS[state.standingsComp] || COMPETITIONS['2df'];
+    const store = state.fipav[comp.key];
+    const teams = (Array.isArray(store.tables) ? store.tables[0]?.data?.teams : store.tables?.data?.teams) || [];
+
+    if (titleEl) {
+      titleEl.textContent = `Classifica ${comp.label} · Gir. A`;
+    }
+    if (linkEl) {
+      linkEl.href = comp.fipavUrl;
+    }
 
     tbody.innerHTML = teams.map((t, idx) => {
-      const isUs = String(t.id) === LADISPOLI_TEAM_ID;
+      const isUs = String(t.id) === comp.teamId;
       return `
         <tr class="${isUs ? 'is-ladispoli-row' : ''}">
           <td class="col-rank">${t.pos || (idx + 1)}</td>
@@ -959,15 +1228,15 @@
     const meta = document.getElementById('fipavSyncMeta');
     if (meta) {
       let timeLabel = '';
-      if (state.fipavUpdatedAt) {
+      if (store.updatedAt) {
         try {
-          const d = new Date(state.fipavUpdatedAt);
+          const d = new Date(store.updatedAt);
           if (!isNaN(d.getTime())) {
             timeLabel = ` · Aggiornato ${d.toLocaleDateString('it-IT', { day: '2-digit', month: 'short' })} alle ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
           }
         } catch (_) {}
       }
-      meta.textContent = `Dati ufficiali FIPAV Comitato Territoriale Roma · Girone ${GIRONE_ID}${timeLabel}`;
+      meta.textContent = `Dati ufficiali FIPAV Comitato Territoriale Roma · Girone ${comp.gironeId}${timeLabel}`;
     }
   }
 
@@ -976,7 +1245,8 @@
     const listEl = document.getElementById('gironeMatchesList');
     if (!sel || !listEl) return;
 
-    const allMatches = state.fipavCalendar?.data?.matches || [];
+    const comp = COMPETITIONS[state.standingsComp] || COMPETITIONS['2df'];
+    const allMatches = state.fipav[comp.key]?.calendar?.data?.matches || [];
     if (allMatches.length === 0) return;
 
     const giornate = [];
@@ -985,7 +1255,7 @@
     });
     giornate.sort((a, b) => (parseInt(a.replace(/\D+/g, ''), 10) || 0) - (parseInt(b.replace(/\D+/g, ''), 10) || 0));
 
-    if (!state.hasAutoSelectedRound) {
+    if (!state.hasAutoSelectedRoundByComp[comp.key]) {
       let latestPlayedRound = '';
       for (const g of giornate) {
         if (allMatches.some(m => m.day === g && isMatchPlayed(m))) {
@@ -993,23 +1263,25 @@
         }
       }
       if (latestPlayedRound) {
-        state.selectedGiornata = latestPlayedRound;
+        state.selectedGiornataByComp[comp.key] = latestPlayedRound;
       }
-      state.hasAutoSelectedRound = true;
+      state.hasAutoSelectedRoundByComp[comp.key] = true;
     }
 
-    if (!giornate.includes(state.selectedGiornata) && giornate.length > 0) {
-      state.selectedGiornata = giornate[0];
+    let selectedRound = state.selectedGiornataByComp[comp.key];
+    if (!giornate.includes(selectedRound) && giornate.length > 0) {
+      selectedRound = giornate[0];
+      state.selectedGiornataByComp[comp.key] = selectedRound;
     }
 
     sel.innerHTML = giornate.map(g =>
-      `<option value="${escapeHtml(g)}" ${g === state.selectedGiornata ? 'selected' : ''}>${escapeHtml(g)}</option>`
+      `<option value="${escapeHtml(g)}" ${g === selectedRound ? 'selected' : ''}>${escapeHtml(g)}</option>`
     ).join('');
 
-    const roundMatches = allMatches.filter(m => m.day === state.selectedGiornata);
+    const roundMatches = allMatches.filter(m => m.day === selectedRound);
     listEl.innerHTML = roundMatches.map(m => {
-      const hasUs = String(m.team1?.id) === LADISPOLI_TEAM_ID || String(m.team2?.id) === LADISPOLI_TEAM_ID;
-      const res = getMatchResultInfo(m);
+      const hasUs = String(m.team1?.id) === comp.teamId || String(m.team2?.id) === comp.teamId;
+      const res = getMatchResultInfo(Object.assign({}, m, { ladispoliTeamId: comp.teamId }));
       const centerTag = res.played
         ? `<span class="mc-score-pill ${hasUs ? (res.didWeWin ? 'is-win' : 'is-loss') : 'is-neutral'}">${res.scoreText}</span>`
         : `<span class="sp-vs">vs</span>`;
@@ -1023,11 +1295,11 @@
           <div class="mc-versus-row" style="border:none; padding:0.15rem 0;">
             <div class="mc-team">
               <img src="${escapeHtml(getTeamLogo(m.team1))}" alt="" class="mc-logo" style="width:28px; height:28px;" onerror="this.src='/logo-ladispoli.jpg'" />
-              <span class="mc-team-title ${String(m.team1?.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}" style="font-size:0.8rem;">${escapeHtml(m.team1?.title)}</span>
+              <span class="mc-team-title ${String(m.team1?.id) === comp.teamId ? 'is-us' : ''}" style="font-size:0.8rem;">${escapeHtml(m.team1?.title)}</span>
             </div>
             ${centerTag}
             <div class="mc-team mc-team-right">
-              <span class="mc-team-title ${String(m.team2?.id) === LADISPOLI_TEAM_ID ? 'is-us' : ''}" style="font-size:0.8rem;">${escapeHtml(m.team2?.title)}</span>
+              <span class="mc-team-title ${String(m.team2?.id) === comp.teamId ? 'is-us' : ''}" style="font-size:0.8rem;">${escapeHtml(m.team2?.title)}</span>
               <img src="${escapeHtml(getTeamLogo(m.team2))}" alt="" class="mc-logo" style="width:28px; height:28px;" onerror="this.src='/logo-ladispoli.jpg'" />
             </div>
           </div>
@@ -1042,13 +1314,187 @@
     }).join('');
   }
 
+  // ==========================================
+  // FOTO DIVERTENTI ("SPUNNATE")
+  // ==========================================
+  function savePhotosBackup() {
+    try {
+      const light = state.femPhotos.filter(p => !String(p.imageUrl || '').startsWith('data:'));
+      localStorage.setItem(PHOTOS_BACKUP_KEY, JSON.stringify(light.slice(0, 20)));
+    } catch (_) {}
+  }
+
+  async function loadFemPhotos() {
+    try {
+      const res = await fetch('/api/fem-photos', {
+        headers: { 'X-Device-Id': getDeviceId() },
+        cache: 'no-store'
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (Array.isArray(data.photos)) {
+        state.femPhotos = data.photos;
+        savePhotosBackup();
+        renderFemPhotosFeed();
+      }
+    } catch (_) {
+      renderFemPhotosFeed();
+    }
+  }
+
+  function renderFemPhotosFeed() {
+    const gridEl = document.getElementById('femPhotosGrid');
+    const sortBtn = document.getElementById('btnFemPhotoSortToggle');
+    if (sortBtn) {
+      sortBtn.textContent = state.femPhotoSort === 'top' ? 'Più votate' : 'Più recenti';
+    }
+    if (!gridEl) return;
+
+    const items = [...(state.femPhotos || [])];
+    if (state.femPhotoSort === 'top') {
+      items.sort((a, b) => {
+        const diff = (b.upvotesCount || 0) - (a.upvotesCount || 0);
+        if (diff !== 0) return diff;
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      });
+    } else {
+      items.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    }
+
+    if (items.length === 0) {
+      gridEl.innerHTML = `
+        <div class="media-empty-card" style="grid-column: 1 / -1;">
+          <div style="font-size:1.6rem;">😂</div>
+          <div>Nessuna foto caricata ancora. Spunna una compagna per iniziare!</div>
+          <button type="button" class="btn-small-primary" data-action="open-upload-fem-photo">
+            + Carica la prima foto
+          </button>
+        </div>
+      `;
+      return;
+    }
+
+    const rankedIds = [...items]
+      .sort((a, b) => {
+        const diff = (b.upvotesCount || 0) - (a.upvotesCount || 0);
+        if (diff !== 0) return diff;
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      })
+      .map(p => p.id);
+
+    gridEl.innerHTML = items.map(p => {
+      const rankNum = rankedIds.indexOf(p.id) + 1;
+      const rankCls = rankNum <= 3 ? `rank-${rankNum}` : '';
+      const medal = rankNum === 1 ? '🥇 #1' : rankNum === 2 ? '🥈 #2' : rankNum === 3 ? '🥉 #3' : `#${rankNum}`;
+      const metaText = `Di ${p.authorName || 'Compagna'} · ${formatRelativeTime(p.createdAt)}`;
+      const caption = p.targetName ? `${p.title} (${p.targetName})` : p.title;
+
+      return `
+        <article class="sock-card">
+          <span class="sock-rank-badge ${rankCls}">${medal}</span>
+          <button type="button" class="sock-photo-btn" data-action="open-lightbox" data-img-url="${escapeHtml(p.imageUrl)}" data-caption="${escapeHtml(caption)}">
+            <img src="${escapeHtml(p.imageUrl)}" alt="${escapeHtml(p.title)}" class="sock-photo-img" loading="lazy" />
+          </button>
+          <div class="sock-card-body">
+            <div>
+              <div class="sock-title">${escapeHtml(p.title)}</div>
+              ${p.targetName ? `<span class="fem-target-pill">🎯 ${escapeHtml(p.targetName)}</span>` : ''}
+              <div class="sock-meta" style="margin-top:0.22rem;">${escapeHtml(metaText)}</div>
+            </div>
+            <div class="sock-actions-row">
+              <button type="button" class="upvote-btn ${p.hasUpvoted ? 'is-upvoted' : ''}" data-action="upvote-fem-photo" data-photo-id="${escapeHtml(p.id)}">
+                <span>😂</span>
+                <span>${p.upvotesCount || 0}</span>
+              </button>
+              ${p.canDelete ? `<button type="button" class="text-action-btn" style="color:var(--accent-red); font-size:0.75rem;" data-action="delete-fem-photo" data-photo-id="${escapeHtml(p.id)}">Elimina</button>` : ''}
+            </div>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function compressImageToJpeg(file, maxDim = 960, quality = 0.78, maxBinaryBytes = 320 * 1024) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          let curMax = maxDim;
+          let curQuality = quality;
+          let dataUrl = '';
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+
+          const renderPass = () => {
+            let { width, height } = img;
+            if (width > curMax || height > curMax) {
+              if (width >= height) {
+                height = Math.round((height * curMax) / width);
+                width = curMax;
+              } else {
+                width = Math.round((width * curMax) / height);
+                height = curMax;
+              }
+            }
+            canvas.width = Math.max(1, width);
+            canvas.height = Math.max(1, height);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            dataUrl = canvas.toDataURL('image/jpeg', curQuality);
+          };
+
+          renderPass();
+          if (maxBinaryBytes > 0) {
+            let attempts = 0;
+            while (Math.ceil((dataUrl.length - 23) * 0.75) > maxBinaryBytes && attempts < 6) {
+              attempts += 1;
+              if (curQuality > 0.52) {
+                curQuality = Math.max(0.5, Number((curQuality - 0.1).toFixed(2)));
+              } else {
+                curMax = Math.max(480, Math.round(curMax * 0.8));
+              }
+              renderPass();
+            }
+          }
+          resolve(dataUrl);
+        };
+        img.onerror = () => reject(new Error('Immagine non valida'));
+        img.src = reader.result;
+      };
+      reader.onerror = () => reject(new Error('Errore lettura file'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function openUploadFemPhotoSheet() {
+    state.femPhotoCompressedDataUrl = '';
+    const form = document.getElementById('formUploadFemPhoto');
+    if (form) form.reset();
+    document.getElementById('femPhotoPreviewWrap')?.classList.add('hidden');
+    const dropLabel = document.getElementById('femPhotoDropLabel');
+    if (dropLabel) dropLabel.textContent = 'Tocca per scegliere o scattare la foto';
+
+    const authorInput = document.getElementById('femPhotoAuthorInput');
+    if (authorInput) {
+      authorInput.value = getSavedNickname();
+    }
+    const submitBtn = document.getElementById('btnSubmitFemPhoto');
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Pubblica Foto';
+    }
+    openSheet('sheetUploadFemPhoto');
+  }
+
   async function shareCurrentPage() {
     const url = window.location.href;
     if (navigator.share) {
       try {
         await navigator.share({
-          title: 'Volley Ladispoli · 2ª Divisione Femminile',
-          text: 'Calendario partite, orari e classifica Girone A Volley Ladispoli',
+          title: 'Volley Ladispoli · 2ª Divisione & Under 19 Femminile',
+          text: 'Calendari 2ª Divisione e Under 19, classifiche FIPAV e foto divertenti Volley Ladispoli',
           url
         });
         return;
@@ -1091,6 +1537,7 @@
       }, { threshold: 0 }).observe(sentinel);
     }
 
+    // Bottom Tabs
     document.querySelectorAll('.nav-tab').forEach(tab => {
       tab.addEventListener('click', () => {
         const viewName = tab.getAttribute('data-view');
@@ -1100,6 +1547,45 @@
       });
     });
 
+    // Championship switcher in Partite
+    document.querySelectorAll('#compSwitcherPartite [data-comp]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const comp = btn.getAttribute('data-comp');
+        state.activeComp = comp;
+        state.calSelectedDayKey = null;
+        document.querySelectorAll('#compSwitcherPartite [data-comp]').forEach(b => {
+          const active = b === btn;
+          b.classList.toggle('active', active);
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        if (comp === '2df' || comp === 'u19') {
+          state.standingsComp = comp;
+          document.querySelectorAll('#compSwitcherClassifica [data-standings]').forEach(sb => {
+            const sActive = sb.getAttribute('data-standings') === comp;
+            sb.classList.toggle('active', sActive);
+            sb.setAttribute('aria-selected', sActive ? 'true' : 'false');
+          });
+        }
+        renderCalendarAndStandings();
+      });
+    });
+
+    // Championship switcher in Classifiche
+    document.querySelectorAll('#compSwitcherClassifica [data-standings]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const comp = btn.getAttribute('data-standings');
+        state.standingsComp = comp;
+        document.querySelectorAll('#compSwitcherClassifica [data-standings]').forEach(b => {
+          const active = b === btn;
+          b.classList.toggle('active', active);
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        renderStandings();
+        renderGironeMatchesByRound();
+      });
+    });
+
+    // Sheets close
     document.querySelectorAll('[data-close]').forEach(btn => {
       btn.addEventListener('click', () => closeSheet(btn.getAttribute('data-close')));
     });
@@ -1110,33 +1596,29 @@
     });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        closeSheet('sheetMatch');
+        closeTopmostSheet();
       }
     });
 
-    const btnPrevM = document.getElementById('btnCalPrevMonth');
-    const btnNextM = document.getElementById('btnCalNextMonth');
-    if (btnPrevM) {
-      btnPrevM.addEventListener('click', () => {
-        const seasonMonths = getSeasonMonths(getLadispoliMatches());
-        const idx = seasonMonths.findIndex(m => m.key === state.calMonthKey);
-        if (idx > 0) {
-          state.calMonthKey = seasonMonths[idx - 1].key;
-          renderSpatialCalendar();
-        }
-      });
-    }
-    if (btnNextM) {
-      btnNextM.addEventListener('click', () => {
-        const seasonMonths = getSeasonMonths(getLadispoliMatches());
-        const idx = seasonMonths.findIndex(m => m.key === state.calMonthKey);
-        if (idx >= 0 && idx < seasonMonths.length - 1) {
-          state.calMonthKey = seasonMonths[idx + 1].key;
-          renderSpatialCalendar();
-        }
-      });
-    }
+    // Spatial Calendar Month Arrows
+    document.getElementById('btnCalPrevMonth')?.addEventListener('click', () => {
+      const seasonMonths = getSeasonMonths(getDisplayedMatches());
+      const idx = seasonMonths.findIndex(m => m.key === state.calMonthKey);
+      if (idx > 0) {
+        state.calMonthKey = seasonMonths[idx - 1].key;
+        renderSpatialCalendar();
+      }
+    });
+    document.getElementById('btnCalNextMonth')?.addEventListener('click', () => {
+      const seasonMonths = getSeasonMonths(getDisplayedMatches());
+      const idx = seasonMonths.findIndex(m => m.key === state.calMonthKey);
+      if (idx >= 0 && idx < seasonMonths.length - 1) {
+        state.calMonthKey = seasonMonths[idx + 1].key;
+        renderSpatialCalendar();
+      }
+    });
 
+    // Matches filter
     document.querySelectorAll('#matchFilterControl .seg-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         state.matchFilter = btn.getAttribute('data-matchfilter');
@@ -1145,24 +1627,111 @@
       });
     });
 
+    // Download all ICS for active competition view
     document.getElementById('btnDownloadAllIcs')?.addEventListener('click', () => {
-      const matches = getLadispoliMatches();
+      const matches = getDisplayedMatches();
       if (matches.length === 0) return;
-      downloadIcsFile('calendario-volley-ladispoli-2df-2026-2027.ics', generateIcsContent(matches));
+      const suffix = state.activeComp === 'all' ? '2df-u19' : state.activeComp;
+      downloadIcsFile(`calendario-volley-ladispoli-${suffix}-2026-2027.ics`, generateIcsContent(matches));
       showToast('Calendario .ics scaricato');
     });
 
     document.getElementById('btnSharePage')?.addEventListener('click', shareCurrentPage);
-    document.getElementById('btnRefreshTop')?.addEventListener('click', () => loadFipavData(true));
-    document.getElementById('btnRefreshFipav')?.addEventListener('click', () => loadFipavData(true));
-    document.getElementById('btnRefreshFipavCal')?.addEventListener('click', () => loadFipavData(true));
+    document.getElementById('btnRefreshTop')?.addEventListener('click', () => {
+      loadAllFipavData(true);
+      loadFemPhotos();
+    });
+    document.getElementById('btnRefreshFipav')?.addEventListener('click', () => loadAllFipavData(true));
+    document.getElementById('btnRefreshFipavCal')?.addEventListener('click', () => loadAllFipavData(true));
 
     document.getElementById('giornataSelect')?.addEventListener('change', (e) => {
-      state.selectedGiornata = e.target.value;
+      state.selectedGiornataByComp[state.standingsComp] = e.target.value;
       renderGironeMatchesByRound();
     });
 
-    document.body.addEventListener('click', (e) => {
+    // Foto divertenti controls
+    document.getElementById('btnOpenUploadFemPhoto')?.addEventListener('click', openUploadFemPhotoSheet);
+    document.getElementById('btnFemPhotoSortToggle')?.addEventListener('click', () => {
+      state.femPhotoSort = state.femPhotoSort === 'top' ? 'recent' : 'top';
+      renderFemPhotosFeed();
+    });
+
+    document.getElementById('femPhotoInput')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      if (!/^image\//i.test(file.type || '') && !/\.(jpg|jpeg|png|webp|heic|heif)$/i.test(file.name || '')) {
+        showToast('Seleziona un file immagine valido', 'error');
+        e.target.value = '';
+        return;
+      }
+      const lbl = document.getElementById('femPhotoDropLabel');
+      if (lbl) lbl.textContent = 'Ottimizzazione foto...';
+      try {
+        const dataUrl = await compressImageToJpeg(file, 960, 0.78, 320 * 1024);
+        state.femPhotoCompressedDataUrl = dataUrl;
+        const previewImg = document.getElementById('femPhotoPreviewImg');
+        if (previewImg) previewImg.src = dataUrl;
+        document.getElementById('femPhotoPreviewWrap')?.classList.remove('hidden');
+        if (lbl) lbl.textContent = 'Foto pronta! Tocca per cambiare';
+      } catch (err) {
+        if (lbl) lbl.textContent = 'Tocca per scegliere o scattare la foto';
+        showToast(err.message || 'Errore lettura immagine', 'error');
+      }
+    });
+
+    document.getElementById('formUploadFemPhoto')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const title = (document.getElementById('femPhotoTitleInput')?.value || '').trim();
+      const targetName = (document.getElementById('femPhotoTargetInput')?.value || '').trim();
+      const authorName = (document.getElementById('femPhotoAuthorInput')?.value || '').trim();
+      const imageUrl = state.femPhotoCompressedDataUrl;
+
+      if (!imageUrl) {
+        showToast('Scegli o scatta prima una foto!', 'error');
+        return;
+      }
+      if (!title) {
+        showToast('Scrivi una didascalia divertente', 'error');
+        return;
+      }
+      if (!authorName) {
+        showToast('Inserisci il tuo nome', 'error');
+        return;
+      }
+
+      const submitBtn = document.getElementById('btnSubmitFemPhoto');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Pubblicazione...';
+      try {
+        const deviceId = getDeviceId();
+        saveNickname(authorName);
+        const res = await fetch('/api/fem-photos', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Device-Id': deviceId
+          },
+          body: JSON.stringify({ title, targetName, authorName, imageUrl, deviceId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Errore ${res.status}`);
+        if (Array.isArray(data.photos)) {
+          state.femPhotos = data.photos;
+          savePhotosBackup();
+          renderFemPhotosFeed();
+        }
+        closeSheet('sheetUploadFemPhoto');
+        showToast('Foto pubblicata!', 'success');
+      } catch (err) {
+        showToast(err.message || 'Errore pubblicazione foto', 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Pubblica Foto';
+      }
+    });
+
+    // Delegated Click Handler
+    document.body.addEventListener('click', async (e) => {
       const actionEl = e.target.closest('[data-action]');
       if (!actionEl) return;
       const action = actionEl.getAttribute('data-action');
@@ -1170,24 +1739,96 @@
       if (action === 'select-cal-month') {
         state.calMonthKey = actionEl.getAttribute('data-month-key');
         renderSpatialCalendar();
-      } else if (action === 'select-cal-match') {
-        const mId = actionEl.getAttribute('data-match-id');
-        if (String(state.calSelectedMatchId) === String(mId)) {
-          openMatchDetailSheet(mId);
+      } else if (action === 'select-cal-day') {
+        const dKey = actionEl.getAttribute('data-day-key');
+        if (state.calSelectedDayKey === dKey) {
+          const dayMatches = getDisplayedMatches().filter(m => m.ymd === dKey);
+          if (dayMatches.length === 1) {
+            openMatchDetailSheet(dayMatches[0].uidKey);
+          }
         } else {
-          state.calSelectedMatchId = mId;
+          state.calSelectedDayKey = dKey;
           renderSpatialCalendar();
         }
       } else if (action === 'open-match') {
-        const matchId = actionEl.getAttribute('data-match-id');
-        openMatchDetailSheet(matchId);
+        const uidKey = actionEl.getAttribute('data-match-uid');
+        openMatchDetailSheet(uidKey);
       } else if (action === 'download-match-ics') {
-        const matchId = actionEl.getAttribute('data-match-id');
-        const m = getLadispoliMatches().find(item => String(item.id) === String(matchId));
+        const uidKey = actionEl.getAttribute('data-match-uid');
+        const m = getAllKnownMatches().find(item => item.uidKey === uidKey);
         if (m) {
-          downloadIcsFile(`volley-ladispoli-2df-${m.day.toLowerCase().replace(/\s+/g, '-')}.ics`, generateIcsContent([m]));
+          downloadIcsFile(`volley-ladispoli-${m.compKey}-${m.day.toLowerCase().replace(/\s+/g, '-')}.ics`, generateIcsContent([m]));
           showToast('File .ics scaricato');
         }
+      } else if (action === 'open-upload-fem-photo') {
+        openUploadFemPhotoSheet();
+      } else if (action === 'upvote-fem-photo') {
+        const photoId = actionEl.getAttribute('data-photo-id');
+        if (!photoId) return;
+        try {
+          const deviceId = getDeviceId();
+          const res = await fetch(`/api/fem-photos/${encodeURIComponent(photoId)}/upvote`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Device-Id': deviceId
+            },
+            body: JSON.stringify({ deviceId })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `Errore ${res.status}`);
+          if (Array.isArray(data.photos)) {
+            state.femPhotos = data.photos;
+            savePhotosBackup();
+            renderFemPhotosFeed();
+          }
+        } catch (err) {
+          showToast(err.message || 'Errore voto foto', 'error');
+        }
+      } else if (action === 'delete-fem-photo') {
+        const photoId = actionEl.getAttribute('data-photo-id');
+        if (!photoId) return;
+        if (actionEl.getAttribute('data-confirm-armed') !== 'true') {
+          actionEl.setAttribute('data-confirm-armed', 'true');
+          actionEl.textContent = 'Conferma?';
+          setTimeout(() => {
+            if (actionEl.isConnected && actionEl.getAttribute('data-confirm-armed') === 'true') {
+              actionEl.removeAttribute('data-confirm-armed');
+              actionEl.textContent = 'Elimina';
+            }
+          }, 3500);
+          return;
+        }
+        try {
+          const deviceId = getDeviceId();
+          const res = await fetch(`/api/fem-photos/${encodeURIComponent(photoId)}`, {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Device-Id': deviceId
+            },
+            body: JSON.stringify({ deviceId })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `Errore ${res.status}`);
+          if (Array.isArray(data.photos)) {
+            state.femPhotos = data.photos;
+            savePhotosBackup();
+            renderFemPhotosFeed();
+            showToast('Foto eliminata', 'success');
+          }
+        } catch (err) {
+          showToast(err.message || 'Impossibile eliminare', 'error');
+        }
+      } else if (action === 'open-lightbox') {
+        e.stopPropagation();
+        e.preventDefault();
+        const imgUrl = actionEl.getAttribute('data-img-url');
+        if (!imgUrl) return;
+        const cap = actionEl.getAttribute('data-caption') || '';
+        document.getElementById('lightboxImg').src = imgUrl;
+        document.getElementById('lightboxCaption').textContent = cap;
+        openSheet('sheetImageLightbox');
       }
     });
   }
@@ -1202,6 +1843,7 @@
     initEvents();
     attachSheetDragPhysics();
     registerServiceWorker();
-    loadFipavData(false);
+    loadAllFipavData(false);
+    loadFemPhotos();
   });
 })();

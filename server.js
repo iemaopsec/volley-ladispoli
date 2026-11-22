@@ -9,7 +9,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
-const ALLOWED_FIPAV_GIRONI = new Set(['64602', '64591']);
+const ALLOWED_FIPAV_GIRONI = new Set(['64602', '64591', '64854']);
 
 function getFipavFiles(gironeId = '64602') {
   const gid = ALLOWED_FIPAV_GIRONI.has(gironeId) ? gironeId : '64602';
@@ -54,7 +54,8 @@ const DEFAULT_DB = {
   sandruProofs: [],
   users: {},
   videos: [],
-  socks: []
+  socks: [],
+  femPhotos: []
 };
 
 const PHOTO_NAME_ALIASES = {
@@ -117,6 +118,25 @@ function getClaimedPlayersMap(db) {
   return claimed;
 }
 
+function serializeFemPhotos(list, deviceId = '', isAdmin = false) {
+  const did = String(deviceId || '').trim();
+  return (Array.isArray(list) ? list : []).map(item => {
+    const upvotes = Array.isArray(item.upvotes) ? item.upvotes : [];
+    const canDelete = Boolean(isAdmin || (did && item.authorDeviceId && item.authorDeviceId === did));
+    return {
+      id: item.id,
+      title: item.title || '',
+      targetName: item.targetName || '',
+      imageUrl: item.imageUrl || '',
+      authorName: item.authorName || 'Squadra',
+      upvotesCount: upvotes.length,
+      hasUpvoted: Boolean(did && upvotes.includes(did)),
+      canDelete,
+      createdAt: item.createdAt || ''
+    };
+  });
+}
+
 function normalizeDb(rawObj) {
   const db = rawObj && typeof rawObj === 'object' ? rawObj : {};
   if (!db.players || !Array.isArray(db.players) || db.players.length === 0) {
@@ -130,6 +150,7 @@ function normalizeDb(rawObj) {
   if (!db.users || typeof db.users !== 'object' || Array.isArray(db.users)) db.users = {};
   if (!db.videos || !Array.isArray(db.videos)) db.videos = [];
   if (!db.socks || !Array.isArray(db.socks)) db.socks = [];
+  if (!db.femPhotos || !Array.isArray(db.femPhotos)) db.femPhotos = [];
   if (!db.adminCode) db.adminCode = DEFAULT_DB.adminCode;
   attachProfilePhotos(db.players);
   return db;
@@ -570,7 +591,7 @@ function sendJson(res, status, payload, extraHeaders = {}) {
     'Cache-Control': 'no-store, no-cache, must-revalidate',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Code, X-Filename'
+    'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Code, X-Filename, X-Device-Id'
   }, extraHeaders));
   res.end(JSON.stringify(payload));
 }
@@ -1423,6 +1444,107 @@ const server = http.createServer(async (req, res) => {
       db.socks = db.socks.filter(s => s.id !== id);
       await persistDb(db);
       return sendJson(res, 200, { socks: db.socks });
+    }
+
+    // WOMEN'S FUNNY PHOTOS ("Foto divertenti" / "Spunnate")
+    if (pathname === '/api/fem-photos' && req.method === 'GET') {
+      const db = await loadDb();
+      const deviceId = String(req.headers['x-device-id'] || '').trim().slice(0, 80);
+      const isAdmin = checkAdmin(req, {}, db);
+      return sendJson(res, 200, { photos: serializeFemPhotos(db.femPhotos, deviceId, isAdmin) });
+    }
+
+    if (pathname === '/api/fem-photos' && req.method === 'POST') {
+      const db = await loadDb();
+      const body = await parseBody(req, 2 * 1024 * 1024);
+      const deviceId = String(body.deviceId || req.headers['x-device-id'] || '').trim().slice(0, 80);
+      const isAdmin = checkAdmin(req, body, db);
+
+      const title = String(body.title || '').trim().slice(0, 120);
+      const authorName = String(body.authorName || '').trim().slice(0, 50);
+      const targetName = String(body.targetName || '').trim().slice(0, 50);
+      const imageUrl = String(body.imageUrl || '').trim();
+
+      if (!title) {
+        return sendJson(res, 400, { error: 'Scrivi una didascalia divertente per la foto' });
+      }
+      if (!authorName) {
+        return sendJson(res, 400, { error: 'Inserisci il tuo nome' });
+      }
+      if (!imageUrl) {
+        return sendJson(res, 400, { error: 'Seleziona una foto da pubblicare' });
+      }
+
+      const isDataImage = /^data:image\/(jpeg|jpg|png|webp);base64,/i.test(imageUrl);
+      const isSafeUrl = imageUrl.startsWith('/uploads/') || imageUrl.startsWith('https://') || imageUrl.startsWith('http://');
+      if (!isDataImage && !isSafeUrl) {
+        return sendJson(res, 400, { error: 'Formato foto non supportato' });
+      }
+      if (isDataImage && imageUrl.length > 700 * 1024) {
+        return sendJson(res, 400, { error: 'Foto troppo pesante dopo la compressione' });
+      }
+
+      const photo = {
+        id: 'femphoto-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        title,
+        targetName,
+        imageUrl,
+        authorName,
+        authorDeviceId: deviceId,
+        upvotes: deviceId ? [deviceId] : [],
+        createdAt: new Date().toISOString()
+      };
+
+      db.femPhotos.unshift(photo);
+      await persistDb(db);
+      const serializedList = serializeFemPhotos(db.femPhotos, deviceId, isAdmin);
+      return sendJson(res, 201, { photo: serializedList[0], photos: serializedList });
+    }
+
+    if (pathname.startsWith('/api/fem-photos/') && pathname.endsWith('/upvote') && req.method === 'POST') {
+      const db = await loadDb();
+      const body = await parseBody(req);
+      const deviceId = String(body.deviceId || req.headers['x-device-id'] || '').trim().slice(0, 80);
+      if (!deviceId) {
+        return sendJson(res, 400, { error: 'Identificativo dispositivo mancante' });
+      }
+      const isAdmin = checkAdmin(req, body, db);
+      const id = pathname.slice('/api/fem-photos/'.length, -'/upvote'.length);
+      const photo = db.femPhotos.find(p => p.id === id);
+      if (!photo) {
+        return sendJson(res, 404, { error: 'Foto non trovata' });
+      }
+      if (!Array.isArray(photo.upvotes)) photo.upvotes = [];
+      const idx = photo.upvotes.indexOf(deviceId);
+      if (idx === -1) {
+        photo.upvotes.push(deviceId);
+      } else {
+        photo.upvotes.splice(idx, 1);
+      }
+      await persistDb(db);
+      return sendJson(res, 200, {
+        photo: serializeFemPhotos([photo], deviceId, isAdmin)[0],
+        photos: serializeFemPhotos(db.femPhotos, deviceId, isAdmin)
+      });
+    }
+
+    if (pathname.startsWith('/api/fem-photos/') && req.method === 'DELETE') {
+      const db = await loadDb();
+      const body = await parseBody(req);
+      const deviceId = String(body.deviceId || req.headers['x-device-id'] || '').trim().slice(0, 80);
+      const isAdmin = checkAdmin(req, body, db);
+      const id = pathname.slice('/api/fem-photos/'.length);
+      const photo = db.femPhotos.find(p => p.id === id);
+      if (!photo) {
+        return sendJson(res, 404, { error: 'Foto non trovata' });
+      }
+      const canDelete = Boolean(isAdmin || (deviceId && photo.authorDeviceId && photo.authorDeviceId === deviceId));
+      if (!canDelete) {
+        return sendJson(res, 401, { error: 'Puoi eliminare solo le foto caricate dal tuo telefono' });
+      }
+      db.femPhotos = db.femPhotos.filter(p => p.id !== id);
+      await persistDb(db);
+      return sendJson(res, 200, { photos: serializeFemPhotos(db.femPhotos, deviceId, isAdmin) });
     }
 
     // MEDIA UPLOADS (Cloudinary signature + local fallback <= 15MB)

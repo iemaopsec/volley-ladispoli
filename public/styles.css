@@ -1410,6 +1410,10 @@ body.sheet-open {
   grid-template-columns: repeat(2, 1fr);
 }
 
+.bottom-bar-inner.bottom-bar-three-tabs {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 .nav-tab {
   position: relative;
   display: flex;
@@ -3437,6 +3441,103 @@ body.sheet-open {
 
 .verified-unlink-btn:active {
   transform: scale(0.95);
+}
+
+/* ==========================================
+   WOMEN'S DUAL CHAMPIONSHIP & SPUNNATE UI
+   ========================================== */
+.comp-switcher-wrap {
+  margin-bottom: 0.85rem;
+}
+
+.comp-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  border-radius: var(--radius-pill);
+  padding: 0.14rem 0.48rem;
+  flex-shrink: 0;
+}
+
+.comp-badge-2df {
+  background: rgba(217, 22, 69, 0.1);
+  color: var(--accent-red);
+}
+
+.comp-badge-u19 {
+  background: rgba(37, 99, 235, 0.11);
+  color: #1d4ed8;
+}
+
+.cal-day-cell.has-match {
+  position: relative;
+}
+
+.cal-day-cell.has-multi-match {
+  border-color: rgba(17, 17, 24, 0.22);
+  background: linear-gradient(135deg, rgba(217, 22, 69, 0.08), rgba(37, 99, 235, 0.08));
+}
+
+.cal-multi-logos {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.cal-multi-logo {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #fff;
+  border: 1px solid rgba(17, 17, 24, 0.1);
+}
+
+.cal-multi-count {
+  font-size: 0.56rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.cal-comp-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.cal-comp-dot-2df {
+  background: var(--accent-red);
+}
+
+.cal-comp-dot-u19 {
+  background: #2563eb;
+}
+
+.cal-spotlight-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.fem-target-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  width: fit-content;
+  margin-top: 0.24rem;
+  padding: 0.14rem 0.48rem;
+  border-radius: var(--radius-pill);
+  background: rgba(217, 22, 69, 0.08);
+  color: var(--accent-red);
+  font-size: 0.69rem;
+  font-weight: 700;
 }
 
 /* ==========================================
